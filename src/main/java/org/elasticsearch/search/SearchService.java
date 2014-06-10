@@ -581,6 +581,7 @@ public class SearchService extends AbstractLifecycleComponent<SearchService> {
     }
 
     private void parseTemplate(ShardSearchRequest request) {
+
         final ExecutableScript executable;
         if (hasLength(request.templateName())) {
             executable = this.scriptService.executable("mustache", request.templateName(), ScriptService.ScriptType.FILE, request.templateParams());
