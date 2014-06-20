@@ -606,7 +606,7 @@ public class SearchService extends AbstractLifecycleComponent<SearchService> {
                     }
                 }
             } catch (IOException e) {
-                logger.error("Error trying to parse template: ", e);
+                throw new ElasticsearchParseException("Failed to parse template", e);
             } finally {
                 IOUtils.closeWhileHandlingException(parser);
             }
