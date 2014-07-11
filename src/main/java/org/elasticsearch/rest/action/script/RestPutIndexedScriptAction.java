@@ -19,8 +19,11 @@
 package org.elasticsearch.rest.action.script;
 
 import org.elasticsearch.ElasticsearchIllegalArgumentException;
+import org.elasticsearch.ElasticsearchIllegalStateException;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
+import org.elasticsearch.action.indexedscripts.get.GetIndexedScriptRequest;
+import org.elasticsearch.action.indexedscripts.get.GetIndexedScriptResponse;
 import org.elasticsearch.action.indexedscripts.put.PutIndexedScriptRequest;
 import org.elasticsearch.action.indexedscripts.put.PutIndexedScriptResponse;
 import org.elasticsearch.client.Client;
@@ -28,14 +31,13 @@ import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.XContentBuilderString;
-import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.common.xcontent.*;
 import org.elasticsearch.index.query.TemplateQueryParser;
 import org.elasticsearch.rest.*;
 import org.elasticsearch.rest.action.support.RestBuilderListener;
+import org.elasticsearch.rest.action.support.RestResponseListener;
 import org.elasticsearch.script.CompiledScript;
+import org.elasticsearch.script.ExecutableScript;
 import org.elasticsearch.script.ScriptService;
 
 import java.io.IOException;
@@ -51,23 +53,15 @@ import static org.elasticsearch.rest.RestStatus.*;
  */
 public class RestPutIndexedScriptAction extends BaseRestHandler {
 
-    private ScriptService scriptService = null;
-
     @Inject
-    public RestPutIndexedScriptAction(Settings settings, Client client, RestController controller) {
+    public RestPutIndexedScriptAction(Settings settings, Client client, RestController controller, ScriptService scriptService) {
         super(settings, client);
 
-        //controller.registerHandler(GET, "/template", this);
         controller.registerHandler(POST, "/_search/script/{lang}/{id}", this);
         controller.registerHandler(PUT, "/_search/script/{lang}/{id}", this);
 
         controller.registerHandler(PUT, "/_search/script/{lang}/{id}/_create", new CreateHandler(settings, client));
         controller.registerHandler(POST, "/_search/script/{lang}/{id}/_create", new CreateHandler(settings, client));
-    }
-
-    @Inject
-    public void setScriptService(ScriptService scriptService){
-        this.scriptService = scriptService;
     }
 
     final class CreateHandler extends BaseRestHandler {
@@ -79,6 +73,40 @@ public class RestPutIndexedScriptAction extends BaseRestHandler {
         public void handleRequest(RestRequest request, RestChannel channel, final Client client) {
             request.params().put("op_type", "create");
             RestPutIndexedScriptAction.this.handleRequest(request, channel, client);
+        }
+    }
+    final class RenderHandler extends BaseRestHandler {
+        ScriptService scriptService;
+        protected RenderHandler(Settings settings, final Client client, final ScriptService scriptService) {
+                        super(settings,client);
+            this.scriptService = scriptService;
+        }
+
+        @Override
+        public void handleRequest(final RestRequest request, RestChannel channel, final Client client){
+            final String id = request.param("id");
+            GetIndexedScriptRequest getReq = new GetIndexedScriptRequest();
+            getReq.id(id);
+            getReq.scriptLang("mustache");
+            client.getIndexedScript(getReq, new RestResponseListener<GetIndexedScriptResponse>(channel) {
+                @Override
+                public RestResponse buildResponse(GetIndexedScriptResponse scriptResponse) {
+                    try {
+                        XContentBuilder builder = XContentFactory.contentBuilder(XContentType.JSON);
+                        if (!scriptResponse.isExists()) {
+                            return new BytesRestResponse(RestStatus.NOT_FOUND, builder);
+                        }
+                        String script = scriptResponse.getScript();
+                        CompiledScript compiledScript = scriptService.compile(script, "mustache", ScriptService.ScriptType.INLINE);
+                        Map<String, Object> paramsMap = XContentHelper.convertToMap(request.content(), false).v2();
+                        ExecutableScript executable = scriptService.executable("mustache", script, ScriptService.ScriptType.INLINE, paramsMap);
+                        builder = XContentBuilder.builder(XContentFactory.xContent((BytesReference) executable.run()));
+                        return new BytesRestResponse(RestStatus.OK, builder);
+                    } catch (IOException ie) {
+                        throw new ElasticsearchIllegalStateException("Unable to build response",ie);
+                    }
+                }
+            });
         }
     }
 
