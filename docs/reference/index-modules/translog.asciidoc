@@ -20,21 +20,6 @@ replaying its operations take a considerable amount of time during recovery.
 It is also exposed through an API, though its rarely needed to be performed
 manually.
 
-
-[float]
-=== Flush settings
-
-The following <<indices-update-settings,dynamically updatable>> settings
-control how often the in-memory buffer is flushed to disk:
-
-`index.translog.flush_threshold_size`::
-
-Once the translog hits this size, a flush will happen. Defaults to `512mb`.
-
-`index.translog.flush_threshold_ops`::
-
-After how many operations to flush. Defaults to `unlimited`.
-
 [float]
 === Translog settings
 
@@ -42,8 +27,8 @@ The data in the transaction log is only persisted to disk when the translog is
 ++fsync++ed and committed.  In the event of hardware failure, any data written
 since the previous translog commit will be lost.
 
-By default, Elasticsearch ++fsync++s and commits the translog every 5 seconds
-and at the end of every <<docs-index_,index>>, <<docs-delete,delete>>,
+By default, Elasticsearch ++fsync++s and commits the translog every 5 seconds if `index.translog.durability` is set
+to `async` or if set to `request` (default) at the end of every <<docs-index_,index>>, <<docs-delete,delete>>,
 <<docs-update,update>>, or  <<docs-bulk,bulk>> request.  In fact, Elasticsearch
 will only report success of an index, delete, update, or bulk request to the
 client after the transaction log has been successfully ++fsync++ed and committed
@@ -55,7 +40,7 @@ control the behaviour of the transaction log:
 `index.translog.sync_interval`::
 
 How often the translog is ++fsync++ed to disk and committed, regardless of
-write operations. Defaults to `5s`.
+write operations. Defaults to `5s`. Values less than `100ms` are not allowed.
 
 `index.translog.durability`::
 +
@@ -77,23 +62,75 @@ update, or bulk request.  This setting accepts the following parameters:
     automatic commit will be discarded.
 --
 
-`index.translog.fs.type`::
-+
---
+`index.translog.flush_threshold_size`::
 
-Whether to buffer writes to the transaction log in memory or not.  This
-setting accepts the following parameters:
+The translog stores all operations that are not yet safely persisted in Lucene (i.e., are
+not part of a lucene commit point). Although these operations are available for reads, they will
+need to be reindexed if the shard was to shutdown and has to be recovered. This settings controls
+the maximum total size of these operations, to prevent recoveries from taking too long. Once the
+maximum size has been reached a flush will happen, generating a new Lucene commit. Defaults to `512mb`.
 
-`buffered`::
+`index.translog.retention.size`::
 
-    (default) Translog writes first go to a 64kB buffer in memory,
-    and are only written to the disk when the buffer is full, or when an
-    `fsync` is triggered by a write request or the `sync_interval`.
+The total size of translog files to keep. Keeping more translog files increases the chance of performing
+an operation based sync when recovering replicas. If the translog files are not sufficient, replica recovery
+will fall back to a file based sync. Defaults to `512mb`
 
-`simple`::
 
-    Translog writes are written to the file system immediately, without
-    buffering.  However, these writes will only be persisted to disk when an
-    `fsync` and commit is triggered by a write request or the `sync_interval`.
+`index.translog.retention.age`::
 
---
+The maximum duration for which translog files will be kept. Defaults to `12h`.
+
+
+[float]
+[[corrupt-translog-truncation]]
+=== What to do if the translog becomes corrupted?
+
+In some cases (a bad drive, user error) the translog can become corrupted. When
+this corruption is detected by Elasticsearch due to mismatching checksums,
+Elasticsearch will fail the shard and refuse to allocate that copy of the data
+to the node, recovering from a replica if available.
+
+If there is no copy of the data from which Elasticsearch can recover
+successfully, a user may want to recover the data that is part of the shard at
+the cost of losing the data that is currently contained in the translog. We
+provide a command-line tool for this, `elasticsearch-translog`.
+
+[WARNING]
+The `elasticsearch-translog` tool should *not* be run while Elasticsearch is
+running, and you will permanently lose the documents that were contained only in
+the translog!
+
+In order to run the `elasticsearch-translog` tool, specify the `truncate`
+subcommand as well as the directory for the corrupted translog with the `-d`
+option:
+
+[source,js]
+--------------------------------------------------
+$ bin/elasticsearch-translog truncate -d /var/lib/elasticsearchdata/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/
+Checking existing translog files
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!   WARNING: Elasticsearch MUST be stopped before running this tool   !
+!                                                                     !
+!   WARNING:    Documents inside of translog files will be lost       !
+!                                                                     !
+!   WARNING:          The following files will be DELETED!            !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+--> data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog-41.ckp
+--> data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog-6.ckp
+--> data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog-37.ckp
+--> data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog-24.ckp
+--> data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog-11.ckp
+
+Continue and DELETE files? [y/N] y
+Reading translog UUID information from Lucene commit from shard at [data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/index]
+Translog Generation: 3
+Translog UUID      : AxqC4rocTC6e0fwsljAh-Q
+Removing existing translog files
+Creating new empty checkpoint at [data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog.ckp]
+Creating new empty translog at [data/nodes/0/indices/P45vf_YQRhqjfwLMUvSqDw/0/translog/translog-3.tlog]
+Done.
+--------------------------------------------------
+
+You can also use the `-h` option to get a list of all options and parameters
+that the `elasticsearch-translog` tool supports.

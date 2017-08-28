@@ -20,18 +20,23 @@
 package org.elasticsearch.common.lucene.search;
 
 import org.apache.lucene.index.Term;
-import org.apache.lucene.search.*;
+import org.apache.lucene.queries.ExtendedCommonTermsQuery;
+import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanClause.Occur;
+import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.MatchNoDocsQuery;
+import org.apache.lucene.search.PrefixQuery;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.index.mapper.internal.TypeFieldMapper;
+import org.elasticsearch.index.mapper.TypeFieldMapper;
 
 import java.util.List;
 import java.util.regex.Pattern;
 
-/**
- *
- */
 public class Queries {
 
     public static Query newMatchAllQuery() {
@@ -39,8 +44,18 @@ public class Queries {
     }
 
     /** Return a query that matches no document. */
-    public static Query newMatchNoDocsQuery() {
-        return new BooleanQuery.Builder().build();
+    public static Query newMatchNoDocsQuery(String reason) {
+        return new MatchNoDocsQuery(reason);
+    }
+
+
+    public static Query newUnmappedFieldQuery(String field) {
+        return Queries.newMatchNoDocsQuery("unmapped field [" + (field != null ? field : "null") + "]");
+    }
+
+    public static Query newLenientFieldQuery(String field, RuntimeException e) {
+        String message = ElasticsearchException.getExceptionName(e) + ":[" + e.getMessage() + "]";
+        return Queries.newMatchNoDocsQuery("failed [" + field + "] query, caused by " + message);
     }
 
     public static Query newNestedFilter() {
@@ -48,7 +63,11 @@ public class Queries {
     }
 
     public static Query newNonNestedFilter() {
-        return not(newNestedFilter());
+        // TODO: this is slow, make it a positive query
+        return new BooleanQuery.Builder()
+                .add(new MatchAllDocsQuery(), Occur.FILTER)
+                .add(newNestedFilter(), Occur.MUST_NOT)
+                .build();
     }
 
     public static BooleanQuery filtered(@Nullable Query query, @Nullable Query filter) {
@@ -88,7 +107,6 @@ public class Queries {
         if (isNegativeQuery(q)) {
             BooleanQuery bq = (BooleanQuery) q;
             BooleanQuery.Builder builder = new BooleanQuery.Builder();
-            builder.setDisableCoord(bq.isCoordDisabled());
             for (BooleanClause clause : bq) {
                 builder.add(clause);
             }
@@ -96,15 +114,6 @@ public class Queries {
             return builder.build();
         }
         return q;
-    }
-
-    public static boolean isConstantMatchAllQuery(Query query) {
-        if (query instanceof ConstantScoreQuery) {
-            return isConstantMatchAllQuery(((ConstantScoreQuery) query).getQuery());
-        } else if (query instanceof MatchAllDocsQuery) {
-            return true;
-        }
-        return false;
     }
 
     public static Query applyMinimumShouldMatch(BooleanQuery query, @Nullable String minimumShouldMatch) {
@@ -121,19 +130,27 @@ public class Queries {
         int msm = calculateMinShouldMatch(optionalClauses, minimumShouldMatch);
         if (0 < msm) {
             BooleanQuery.Builder builder = new BooleanQuery.Builder();
-            builder.setDisableCoord(query.isCoordDisabled());
             for (BooleanClause clause : query) {
                 builder.add(clause);
             }
             builder.setMinimumNumberShouldMatch(msm);
-            BooleanQuery bq = builder.build();
-            if (query.getBoost() != 1f) {
-                return new BoostQuery(bq, query.getBoost());
-            }
-            return bq;
+            return builder.build();
         } else {
             return query;
         }
+    }
+
+    /**
+     * Potentially apply minimum should match value if we have a query that it can be applied to,
+     * otherwise return the original query.
+     */
+    public static Query maybeApplyMinimumShouldMatch(Query query, @Nullable String minimumShouldMatch) {
+        if (query instanceof BooleanQuery) {
+            return applyMinimumShouldMatch((BooleanQuery) query, minimumShouldMatch);
+        } else if (query instanceof ExtendedCommonTermsQuery) {
+            ((ExtendedCommonTermsQuery)query).setLowFreqMinimumNumberShouldMatch(minimumShouldMatch);
+        }
+        return query;
     }
 
     private static Pattern spaceAroundLessThanPattern = Pattern.compile("(\\s+<\\s*)|(\\s*<\\s+)");
@@ -173,8 +190,6 @@ public class Queries {
             result = calc < 0 ? result + calc : calc;
         }
 
-        return (optionalClauseCount < result ?
-                optionalClauseCount : (result < 0 ? 0 : result));
-
+        return result < 0 ? 0 : result;
     }
 }

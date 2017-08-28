@@ -19,7 +19,15 @@ package org.elasticsearch.common.inject;
 import org.elasticsearch.common.inject.internal.MoreTypes;
 import org.elasticsearch.common.inject.util.Types;
 
-import java.lang.reflect.*;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
+import java.lang.reflect.Member;
+import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
+import java.lang.reflect.WildcardType;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -39,7 +47,7 @@ import static org.elasticsearch.common.inject.internal.MoreTypes.canonicalize;
  * <p>
  * This syntax cannot be used to create type literals that have wildcard
  * parameters, such as {@code Class<?>} or {@code List<? extends CharSequence>}.
- * Such type literals must be constructed programatically, either by {@link
+ * Such type literals must be constructed programmatically, either by {@link
  * Method#getGenericReturnType extracting types from members} or by using the
  * {@link Types} factory class.
  * <p>

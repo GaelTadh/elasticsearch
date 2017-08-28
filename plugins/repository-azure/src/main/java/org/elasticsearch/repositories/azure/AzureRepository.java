@@ -19,29 +19,32 @@
 
 package org.elasticsearch.repositories.azure;
 
-import com.microsoft.azure.storage.StorageException;
 import com.microsoft.azure.storage.LocationMode;
+import com.microsoft.azure.storage.StorageException;
 import org.elasticsearch.cloud.azure.blobstore.AzureBlobStore;
-import org.elasticsearch.cloud.azure.storage.AzureStorageService.Storage;
+import org.elasticsearch.cloud.azure.storage.AzureStorageService;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.cluster.metadata.RepositoryMetaData;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.blobstore.BlobPath;
 import org.elasticsearch.common.blobstore.BlobStore;
-import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.unit.ByteSizeUnit;
+import org.elasticsearch.common.settings.Setting;
+import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.unit.ByteSizeValue;
-import org.elasticsearch.index.snapshots.IndexShardRepository;
-import org.elasticsearch.repositories.RepositoryName;
-import org.elasticsearch.repositories.RepositorySettings;
-import org.elasticsearch.repositories.RepositoryVerificationException;
+import org.elasticsearch.common.xcontent.NamedXContentRegistry;
+import org.elasticsearch.env.Environment;
+import org.elasticsearch.repositories.IndexId;
 import org.elasticsearch.repositories.blobstore.BlobStoreRepository;
-import org.elasticsearch.snapshots.SnapshotCreationException;
+import org.elasticsearch.snapshots.SnapshotId;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Function;
+
+import static org.elasticsearch.cloud.azure.storage.AzureStorageService.MAX_CHUNK_SIZE;
+import static org.elasticsearch.cloud.azure.storage.AzureStorageService.MIN_CHUNK_SIZE;
 
 /**
  * Azure file system implementation of the BlobStoreRepository
@@ -56,66 +59,61 @@ import java.util.Locale;
  */
 public class AzureRepository extends BlobStoreRepository {
 
-    public final static String TYPE = "azure";
-    public final static String CONTAINER_DEFAULT = "elasticsearch-snapshots";
+    public static final String TYPE = "azure";
 
-    static public final class Repository {
-        public static final String ACCOUNT = "account";
-        public static final String LOCATION_MODE = "location_mode";
-        public static final String CONTAINER = "container";
-        public static final String CHUNK_SIZE = "chunk_size";
-        public static final String COMPRESS = "compress";
-        public static final String BASE_PATH = "base_path";
+    public static final class Repository {
+
+        @Deprecated // Replaced by client
+        public static final Setting<String> ACCOUNT_SETTING = new Setting<>("account", "default", Function.identity(),
+            Property.NodeScope, Property.Deprecated);
+        public static final Setting<String> CLIENT_NAME = new Setting<>("client", ACCOUNT_SETTING, Function.identity());
+
+        public static final Setting<String> CONTAINER_SETTING =
+            new Setting<>("container", "elasticsearch-snapshots", Function.identity(), Property.NodeScope);
+        public static final Setting<String> BASE_PATH_SETTING = Setting.simpleString("base_path", Property.NodeScope);
+        public static final Setting<String> LOCATION_MODE_SETTING = Setting.simpleString("location_mode", Property.NodeScope);
+        public static final Setting<ByteSizeValue> CHUNK_SIZE_SETTING =
+            Setting.byteSizeSetting("chunk_size", MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, MAX_CHUNK_SIZE, Property.NodeScope);
+        public static final Setting<Boolean> COMPRESS_SETTING = Setting.boolSetting("compress", false, Property.NodeScope);
     }
 
     private final AzureBlobStore blobStore;
-
     private final BlobPath basePath;
-
-    private ByteSizeValue chunkSize;
-
-    private boolean compress;
+    private final ByteSizeValue chunkSize;
+    private final boolean compress;
     private final boolean readonly;
 
-    @Inject
-    public AzureRepository(RepositoryName name, RepositorySettings repositorySettings,
-                           IndexShardRepository indexShardRepository,
-                           AzureBlobStore azureBlobStore) throws IOException, URISyntaxException, StorageException {
-        super(name.getName(), repositorySettings, indexShardRepository);
+    public AzureRepository(RepositoryMetaData metadata, Environment environment,
+                           NamedXContentRegistry namedXContentRegistry, AzureStorageService storageService)
+        throws IOException, URISyntaxException, StorageException {
+        super(metadata, environment.settings(), namedXContentRegistry);
 
-        String container = repositorySettings.settings().get(Repository.CONTAINER,
-                settings.get(Storage.CONTAINER, CONTAINER_DEFAULT));
-
-        this.blobStore = azureBlobStore;
-        this.chunkSize = repositorySettings.settings().getAsBytesSize(Repository.CHUNK_SIZE,
-                settings.getAsBytesSize(Storage.CHUNK_SIZE, new ByteSizeValue(64, ByteSizeUnit.MB)));
-
-        if (this.chunkSize.getMb() > 64) {
-            logger.warn("azure repository does not support yet size > 64mb. Fall back to 64mb.");
-            this.chunkSize = new ByteSizeValue(64, ByteSizeUnit.MB);
-        }
-
-        this.compress = repositorySettings.settings().getAsBoolean(Repository.COMPRESS,
-                settings.getAsBoolean(Storage.COMPRESS, false));
-        String modeStr = repositorySettings.settings().get(Repository.LOCATION_MODE, null);
-        if (modeStr != null) {
-            LocationMode locationMode = LocationMode.valueOf(modeStr.toUpperCase(Locale.ROOT));
-            if (locationMode == LocationMode.SECONDARY_ONLY) {
-                readonly = true;
+        blobStore = new AzureBlobStore(metadata, environment.settings(), storageService);
+        String container = Repository.CONTAINER_SETTING.get(metadata.settings());
+        this.chunkSize = Repository.CHUNK_SIZE_SETTING.get(metadata.settings());
+        this.compress = Repository.COMPRESS_SETTING.get(metadata.settings());
+        String modeStr = Repository.LOCATION_MODE_SETTING.get(metadata.settings());
+        Boolean forcedReadonly = metadata.settings().getAsBoolean("readonly", null);
+        // If the user explicitly did not define a readonly value, we set it by ourselves depending on the location mode setting.
+        // For secondary_only setting, the repository should be read only
+        if (forcedReadonly == null) {
+            if (Strings.hasLength(modeStr)) {
+                LocationMode locationMode = LocationMode.valueOf(modeStr.toUpperCase(Locale.ROOT));
+                this.readonly = locationMode == LocationMode.SECONDARY_ONLY;
             } else {
-                readonly = false;
+                this.readonly = false;
             }
         } else {
-            readonly = false;
+            readonly = forcedReadonly;
         }
 
-        String basePath = repositorySettings.settings().get(Repository.BASE_PATH, null);
+        String basePath = Repository.BASE_PATH_SETTING.get(metadata.settings());
 
         if (Strings.hasLength(basePath)) {
             // Remove starting / if any
             basePath = Strings.trimLeadingCharacter(basePath, '/');
             BlobPath path = new BlobPath();
-            for(String elem : Strings.splitStringToArray(basePath, '/')) {
+            for(String elem : basePath.split("/")) {
                 path = path.add(elem);
             }
             this.basePath = path;
@@ -156,37 +154,15 @@ public class AzureRepository extends BlobStoreRepository {
     }
 
     @Override
-    public void initializeSnapshot(SnapshotId snapshotId, List<String> indices, MetaData metaData) {
-        try {
-            if (!blobStore.doesContainerExist(blobStore.container())) {
-                logger.debug("container [{}] does not exist. Creating...", blobStore.container());
-                blobStore.createContainer(blobStore.container());
-            }
-            super.initializeSnapshot(snapshotId, indices, metaData);
-        } catch (StorageException | URISyntaxException e) {
-            logger.warn("can not initialize container [{}]: [{}]", blobStore.container(), e.getMessage());
-            throw new SnapshotCreationException(snapshotId, e);
+    public void initializeSnapshot(SnapshotId snapshotId, List<IndexId> indices, MetaData clusterMetadata) {
+        if (blobStore.doesContainerExist(blobStore.container()) == false) {
+            throw new IllegalArgumentException("The bucket [" + blobStore.container() + "] does not exist. Please create it before " +
+                " creating an azure snapshot repository backed by it.");
         }
     }
 
     @Override
-    public String startVerification() {
-        if (readonly == false) {
-            try {
-                if (!blobStore.doesContainerExist(blobStore.container())) {
-                    logger.debug("container [{}] does not exist. Creating...", blobStore.container());
-                    blobStore.createContainer(blobStore.container());
-                }
-            } catch (StorageException | URISyntaxException e) {
-                logger.warn("can not initialize container [{}]: [{}]", blobStore.container(), e.getMessage());
-                throw new RepositoryVerificationException(repositoryName, "can not initialize container " + blobStore.container(), e);
-            }
-        }
-        return super.startVerification();
-    }
-
-    @Override
-    public boolean readOnly() {
+    public boolean isReadOnly() {
         return readonly;
     }
 }

@@ -27,11 +27,11 @@ import org.elasticsearch.common.io.stream.Writeable;
 import java.io.IOException;
 import java.util.Locale;
 
-public enum CombineFunction implements Writeable<CombineFunction> {
+public enum CombineFunction implements Writeable {
     MULTIPLY {
         @Override
         public float combine(double queryScore, double funcScore, double maxBoost) {
-            return toFloat(queryScore * Math.min(funcScore, maxBoost));
+            return (float) (queryScore * Math.min(funcScore, maxBoost));
         }
 
         @Override
@@ -48,7 +48,7 @@ public enum CombineFunction implements Writeable<CombineFunction> {
     REPLACE {
         @Override
         public float combine(double queryScore, double funcScore, double maxBoost) {
-            return toFloat(Math.min(funcScore, maxBoost));
+            return (float) (Math.min(funcScore, maxBoost));
         }
 
         @Override
@@ -64,7 +64,7 @@ public enum CombineFunction implements Writeable<CombineFunction> {
     SUM {
         @Override
         public float combine(double queryScore, double funcScore, double maxBoost) {
-            return toFloat(queryScore + Math.min(funcScore, maxBoost));
+            return (float) (queryScore + Math.min(funcScore, maxBoost));
         }
 
         @Override
@@ -79,7 +79,7 @@ public enum CombineFunction implements Writeable<CombineFunction> {
     AVG {
         @Override
         public float combine(double queryScore, double funcScore, double maxBoost) {
-            return toFloat((Math.min(funcScore, maxBoost) + queryScore) / 2.0);
+            return (float) ((Math.min(funcScore, maxBoost) + queryScore) / 2.0);
         }
 
         @Override
@@ -87,7 +87,7 @@ public enum CombineFunction implements Writeable<CombineFunction> {
             Explanation minExpl = Explanation.match(Math.min(funcExpl.getValue(), maxBoost), "min of:",
                     funcExpl, Explanation.match(maxBoost, "maxBoost"));
             return Explanation.match(
-                    toFloat((Math.min(funcExpl.getValue(), maxBoost) + queryExpl.getValue()) / 2.0), "avg of",
+                    (float) ((Math.min(funcExpl.getValue(), maxBoost) + queryExpl.getValue()) / 2.0), "avg of",
                     queryExpl, minExpl);
         }
 
@@ -95,7 +95,7 @@ public enum CombineFunction implements Writeable<CombineFunction> {
     MIN {
         @Override
         public float combine(double queryScore, double funcScore, double maxBoost) {
-            return toFloat(Math.min(queryScore, Math.min(funcScore, maxBoost)));
+            return (float) (Math.min(queryScore, Math.min(funcScore, maxBoost)));
         }
 
         @Override
@@ -112,7 +112,7 @@ public enum CombineFunction implements Writeable<CombineFunction> {
     MAX {
         @Override
         public float combine(double queryScore, double funcScore, double maxBoost) {
-            return toFloat(Math.max(queryScore, Math.min(funcScore, maxBoost)));
+            return (float) (Math.max(queryScore, Math.min(funcScore, maxBoost)));
         }
 
         @Override
@@ -129,34 +129,15 @@ public enum CombineFunction implements Writeable<CombineFunction> {
 
     public abstract float combine(double queryScore, double funcScore, double maxBoost);
 
-    public static float toFloat(double input) {
-        assert deviation(input) <= 0.001 : "input " + input + " out of float scope for function score deviation: " + deviation(input);
-        return (float) input;
-    }
-
-    private static double deviation(double input) { // only with assert!
-        float floatVersion = (float) input;
-        return Double.compare(floatVersion, input) == 0 || input == 0.0d ? 0 : 1.d - (floatVersion) / input;
-    }
-
     public abstract Explanation explain(Explanation queryExpl, Explanation funcExpl, float maxBoost);
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeVInt(this.ordinal());
+        out.writeEnum(this);
     }
 
-    @Override
-    public CombineFunction readFrom(StreamInput in) throws IOException {
-        int ordinal = in.readVInt();
-        if (ordinal < 0 || ordinal >= values().length) {
-            throw new IOException("Unknown CombineFunction ordinal [" + ordinal + "]");
-        }
-        return values()[ordinal];
-    }
-
-    public static CombineFunction readCombineFunctionFrom(StreamInput in) throws IOException {
-        return CombineFunction.MULTIPLY.readFrom(in);
+    public static CombineFunction readFromStream(StreamInput in) throws IOException {
+        return in.readEnum(CombineFunction.class);
     }
 
     public static CombineFunction fromString(String combineFunction) {

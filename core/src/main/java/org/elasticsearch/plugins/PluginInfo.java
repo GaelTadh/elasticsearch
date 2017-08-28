@@ -16,235 +16,258 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.elasticsearch.plugins;
 
 import org.elasticsearch.Version;
 import org.elasticsearch.bootstrap.JarHell;
+import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.io.stream.Streamable;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.xcontent.ToXContent.Params;
+import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.XContentBuilderString;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Properties;
 
-public class PluginInfo implements Streamable, ToXContent {
+/**
+ * An in-memory representation of the plugin descriptor.
+ */
+public class PluginInfo implements Writeable, ToXContentObject {
 
     public static final String ES_PLUGIN_PROPERTIES = "plugin-descriptor.properties";
     public static final String ES_PLUGIN_POLICY = "plugin-security.policy";
 
-    static final class Fields {
-        static final XContentBuilderString NAME = new XContentBuilderString("name");
-        static final XContentBuilderString DESCRIPTION = new XContentBuilderString("description");
-        static final XContentBuilderString URL = new XContentBuilderString("url");
-        static final XContentBuilderString SITE = new XContentBuilderString("site");
-        static final XContentBuilderString VERSION = new XContentBuilderString("version");
-        static final XContentBuilderString JVM = new XContentBuilderString("jvm");
-        static final XContentBuilderString CLASSNAME = new XContentBuilderString("classname");
-        static final XContentBuilderString ISOLATED = new XContentBuilderString("isolated");
-    }
+    private final String name;
+    private final String description;
+    private final String version;
+    private final String classname;
+    private final boolean hasNativeController;
+    private final boolean requiresKeystore;
 
-    private String name;
-    private String description;
-    private boolean site;
-    private String version;
-
-    private boolean jvm;
-    private String classname;
-    private boolean isolated;
-
-    public PluginInfo() {
+    /**
+     * Construct plugin info.
+     *
+     * @param name                the name of the plugin
+     * @param description         a description of the plugin
+     * @param version             the version of Elasticsearch the plugin is built for
+     * @param classname           the entry point to the plugin
+     * @param hasNativeController whether or not the plugin has a native controller
+     * @param requiresKeystore    whether or not the plugin requires the elasticsearch keystore to be created
+     */
+    public PluginInfo(String name, String description, String version, String classname,
+                      boolean hasNativeController, boolean requiresKeystore) {
+        this.name = name;
+        this.description = description;
+        this.version = version;
+        this.classname = classname;
+        this.hasNativeController = hasNativeController;
+        this.requiresKeystore = requiresKeystore;
     }
 
     /**
-     * Information about plugins
+     * Construct plugin info from a stream.
      *
-     * @param name        Its name
-     * @param description Its description
-     * @param site        true if it's a site plugin
-     * @param jvm         true if it's a jvm plugin
-     * @param version     Version number
+     * @param in the stream
+     * @throws IOException if an I/O exception occurred reading the plugin info from the stream
      */
-    PluginInfo(String name, String description, boolean site, String version, boolean jvm, String classname, boolean isolated) {
-        this.name = name;
-        this.description = description;
-        this.site = site;
-        this.jvm = jvm;
-        this.version = version;
-        this.classname = classname;
-        this.isolated = isolated;
+    public PluginInfo(final StreamInput in) throws IOException {
+        this.name = in.readString();
+        this.description = in.readString();
+        this.version = in.readString();
+        this.classname = in.readString();
+        if (in.getVersion().onOrAfter(Version.V_5_4_0)) {
+            hasNativeController = in.readBoolean();
+        } else {
+            hasNativeController = false;
+        }
+        if (in.getVersion().onOrAfter(Version.V_6_0_0_beta2)) {
+            requiresKeystore = in.readBoolean();
+        } else {
+            requiresKeystore = false;
+        }
+    }
+
+    @Override
+    public void writeTo(final StreamOutput out) throws IOException {
+        out.writeString(name);
+        out.writeString(description);
+        out.writeString(version);
+        out.writeString(classname);
+        if (out.getVersion().onOrAfter(Version.V_5_4_0)) {
+            out.writeBoolean(hasNativeController);
+        }
+        if (out.getVersion().onOrAfter(Version.V_6_0_0_beta2)) {
+            out.writeBoolean(requiresKeystore);
+        }
     }
 
     /** reads (and validates) plugin metadata descriptor file */
-    public static PluginInfo readFromProperties(Path dir) throws IOException {
-        Path descriptor = dir.resolve(ES_PLUGIN_PROPERTIES);
-        Properties props = new Properties();
+
+    /**
+     * Reads and validates the plugin descriptor file.
+     *
+     * @param path the path to the root directory for the plugin
+     * @return the plugin info
+     * @throws IOException if an I/O exception occurred reading the plugin descriptor
+     */
+    public static PluginInfo readFromProperties(final Path path) throws IOException {
+        final Path descriptor = path.resolve(ES_PLUGIN_PROPERTIES);
+        final Properties props = new Properties();
         try (InputStream stream = Files.newInputStream(descriptor)) {
             props.load(stream);
         }
-        String name = props.getProperty("name");
+        final String name = props.getProperty("name");
         if (name == null || name.isEmpty()) {
-            throw new IllegalArgumentException("Property [name] is missing in [" + descriptor + "]");
+            throw new IllegalArgumentException(
+                    "property [name] is missing in [" + descriptor + "]");
         }
-        PluginManager.checkForForbiddenName(name);
-        String description = props.getProperty("description");
+        final String description = props.getProperty("description");
         if (description == null) {
-            throw new IllegalArgumentException("Property [description] is missing for plugin [" + name + "]");
+            throw new IllegalArgumentException(
+                    "property [description] is missing for plugin [" + name + "]");
         }
-        String version = props.getProperty("version");
+        final String version = props.getProperty("version");
         if (version == null) {
-            throw new IllegalArgumentException("Property [version] is missing for plugin [" + name + "]");
+            throw new IllegalArgumentException(
+                    "property [version] is missing for plugin [" + name + "]");
         }
 
-        boolean jvm = Boolean.parseBoolean(props.getProperty("jvm"));
-        boolean site = Boolean.parseBoolean(props.getProperty("site"));
-        if (jvm == false && site == false) {
-            throw new IllegalArgumentException("Plugin [" + name + "] must be at least a jvm or site plugin");
+        final String esVersionString = props.getProperty("elasticsearch.version");
+        if (esVersionString == null) {
+            throw new IllegalArgumentException(
+                    "property [elasticsearch.version] is missing for plugin [" + name + "]");
         }
-        boolean isolated = true;
-        String classname = "NA";
-        if (jvm) {
-            String esVersionString = props.getProperty("elasticsearch.version");
-            if (esVersionString == null) {
-                throw new IllegalArgumentException("Property [elasticsearch.version] is missing for jvm plugin [" + name + "]");
-            }
-            Version esVersion = Version.fromString(esVersionString);
-            if (esVersion.equals(Version.CURRENT) == false) {
-                throw new IllegalArgumentException("Plugin [" + name + "] is incompatible with Elasticsearch [" + Version.CURRENT.toString() +
-                        "]. Was designed for version [" + esVersionString + "]");
-            }
-            String javaVersionString = props.getProperty("java.version");
-            if (javaVersionString == null) {
-                throw new IllegalArgumentException("Property [java.version] is missing for jvm plugin [" + name + "]");
-            }
-            JarHell.checkVersionFormat(javaVersionString);
-            JarHell.checkJavaVersion(name, javaVersionString);
-            isolated = Boolean.parseBoolean(props.getProperty("isolated", "true"));
-            classname = props.getProperty("classname");
-            if (classname == null) {
-                throw new IllegalArgumentException("Property [classname] is missing for jvm plugin [" + name + "]");
+        final Version esVersion = Version.fromString(esVersionString);
+        if (esVersion.equals(Version.CURRENT) == false) {
+            final String message = String.format(
+                    Locale.ROOT,
+                    "plugin [%s] is incompatible with version [%s]; was designed for version [%s]",
+                    name,
+                    Version.CURRENT.toString(),
+                    esVersionString);
+            throw new IllegalArgumentException(message);
+        }
+        final String javaVersionString = props.getProperty("java.version");
+        if (javaVersionString == null) {
+            throw new IllegalArgumentException(
+                    "property [java.version] is missing for plugin [" + name + "]");
+        }
+        JarHell.checkVersionFormat(javaVersionString);
+        JarHell.checkJavaVersion(name, javaVersionString);
+        final String classname = props.getProperty("classname");
+        if (classname == null) {
+            throw new IllegalArgumentException(
+                    "property [classname] is missing for plugin [" + name + "]");
+        }
+
+        final String hasNativeControllerValue = props.getProperty("has.native.controller");
+        final boolean hasNativeController;
+        if (hasNativeControllerValue == null) {
+            hasNativeController = false;
+        } else {
+            switch (hasNativeControllerValue) {
+                case "true":
+                    hasNativeController = true;
+                    break;
+                case "false":
+                    hasNativeController = false;
+                    break;
+                default:
+                    final String message = String.format(
+                        Locale.ROOT,
+                        "property [%s] must be [%s], [%s], or unspecified but was [%s]",
+                        "has_native_controller",
+                        "true",
+                        "false",
+                        hasNativeControllerValue);
+                    throw new IllegalArgumentException(message);
             }
         }
 
-        if (site) {
-            if (!Files.exists(dir.resolve("_site"))) {
-                throw new IllegalArgumentException("Plugin [" + name + "] is a site plugin but has no '_site/' directory");
-            }
+        final String requiresKeystoreValue = props.getProperty("requires.keystore", "false");
+        final boolean requiresKeystore;
+        try {
+            requiresKeystore = Booleans.parseBoolean(requiresKeystoreValue);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("property [requires.keystore] must be [true] or [false]," +
+                                               " but was [" + requiresKeystoreValue + "]", e);
         }
 
-        return new PluginInfo(name, description, site, version, jvm, classname, isolated);
+        return new PluginInfo(name, description, version, classname, hasNativeController, requiresKeystore);
     }
 
     /**
-     * @return Plugin's name
+     * The name of the plugin.
+     *
+     * @return the plugin name
      */
     public String getName() {
         return name;
     }
 
     /**
-     * @return Plugin's description if any
+     * The description of the plugin.
+     *
+     * @return the plugin description
      */
     public String getDescription() {
         return description;
     }
 
     /**
-     * @return true if it's a site plugin
-     */
-    public boolean isSite() {
-        return site;
-    }
-
-    /**
-     * @return true if it's a plugin running in the jvm
-     */
-    public boolean isJvm() {
-        return jvm;
-    }
-
-    /**
-     * @return true if jvm plugin has isolated classloader
-     */
-    public boolean isIsolated() {
-        return isolated;
-    }
-
-    /**
-     * @return jvm plugin's classname
+     * The entry point to the plugin.
+     *
+     * @return the entry point to the plugin
      */
     public String getClassname() {
         return classname;
     }
 
     /**
-     * We compute the URL for sites: "/_plugin/" + name + "/"
+     * The version of Elasticsearch the plugin was built for.
      *
-     * @return relative URL for site plugin
-     */
-    public String getUrl() {
-        if (site) {
-            return ("/_plugin/" + name + "/");
-        } else {
-            return null;
-        }
-    }
-
-    /**
-     * @return Version number for the plugin
+     * @return the version
      */
     public String getVersion() {
         return version;
     }
 
-    public static PluginInfo readFromStream(StreamInput in) throws IOException {
-        PluginInfo info = new PluginInfo();
-        info.readFrom(in);
-        return info;
+    /**
+     * Whether or not the plugin has a native controller.
+     *
+     * @return {@code true} if the plugin has a native controller
+     */
+    public boolean hasNativeController() {
+        return hasNativeController;
     }
 
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
-        this.name = in.readString();
-        this.description = in.readString();
-        this.site = in.readBoolean();
-        this.jvm = in.readBoolean();
-        this.version = in.readString();
-        this.classname = in.readString();
-        this.isolated = in.readBoolean();
-    }
-
-    @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        out.writeString(name);
-        out.writeString(description);
-        out.writeBoolean(site);
-        out.writeBoolean(jvm);
-        out.writeString(version);
-        out.writeString(classname);
-        out.writeBoolean(isolated);
+    /**
+     * Whether or not the plugin requires the elasticsearch keystore to exist.
+     *
+     * @return {@code true} if the plugin requires a keystore, {@code false} otherwise
+     */
+    public boolean requiresKeystore() {
+        return requiresKeystore;
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject();
-        builder.field(Fields.NAME, name);
-        builder.field(Fields.VERSION, version);
-        builder.field(Fields.DESCRIPTION, description);
-        if (site) {
-            builder.field(Fields.URL, getUrl());
+        {
+            builder.field("name", name);
+            builder.field("version", version);
+            builder.field("description", description);
+            builder.field("classname", classname);
+            builder.field("has_native_controller", hasNativeController);
+            builder.field("requires_keystore", requiresKeystore);
         }
-        builder.field(Fields.JVM, jvm);
-        if (jvm) {
-            builder.field(Fields.CLASSNAME, classname);
-            builder.field(Fields.ISOLATED, isolated);
-        }
-        builder.field(Fields.SITE, site);
         builder.endObject();
 
         return builder;
@@ -274,15 +297,11 @@ public class PluginInfo implements Streamable, ToXContent {
                 .append("- Plugin information:\n")
                 .append("Name: ").append(name).append("\n")
                 .append("Description: ").append(description).append("\n")
-                .append("Site: ").append(site).append("\n")
                 .append("Version: ").append(version).append("\n")
-                .append("JVM: ").append(jvm).append("\n");
-
-        if (jvm) {
-            information.append(" * Classname: ").append(classname).append("\n");
-            information.append(" * Isolated: ").append(isolated);
-        }
-
+                .append("Native Controller: ").append(hasNativeController).append("\n")
+                .append("Requires Keystore: ").append(requiresKeystore).append("\n")
+                .append(" * Classname: ").append(classname);
         return information.toString();
     }
+
 }

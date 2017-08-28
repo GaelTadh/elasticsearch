@@ -19,14 +19,15 @@
 
 package org.elasticsearch.common.unit;
 
+import com.carrotsearch.randomizedtesting.generators.RandomStrings;
+
+import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.test.ESTestCase;
 
 import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.equalTo;
 
-/**
- *
- */
 public class DistanceUnitTests extends ESTestCase {
     public void testSimpleDistanceUnit() {
         assertThat(DistanceUnit.KILOMETERS.convert(10, DistanceUnit.MILES), closeTo(16.09344, 0.001));
@@ -72,5 +73,22 @@ public class DistanceUnitTests extends ESTestCase {
         assertEquals(6, DistanceUnit.CENTIMETERS.ordinal());
         assertEquals(7, DistanceUnit.MILES.ordinal());
         assertEquals(8, DistanceUnit.METERS.ordinal());
+    }
+
+    public void testReadWrite() throws Exception {
+        for (DistanceUnit unit : DistanceUnit.values()) {
+          try (BytesStreamOutput out = new BytesStreamOutput()) {
+              unit.writeTo(out);
+              try (StreamInput in = out.bytes().streamInput()) {
+                  assertThat("Roundtrip serialisation failed.", DistanceUnit.readFromStream(in), equalTo(unit));
+              }
+          }
+        }
+    }
+
+    public void testFromString() {
+        for (DistanceUnit unit : DistanceUnit.values()) {
+            assertThat("Roundtrip string parsing failed.", DistanceUnit.fromString(unit.toString()), equalTo(unit));
+        }
     }
 }

@@ -21,9 +21,9 @@ package org.elasticsearch.snapshots;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContent.Params;
+import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.XContentBuilderString;
 import org.elasticsearch.rest.RestStatus;
 
 import java.io.IOException;
@@ -36,7 +36,7 @@ import java.util.List;
  * <p>
  * Returned as part of {@link org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotResponse}
  */
-public class RestoreInfo implements ToXContent, Streamable {
+public class RestoreInfo implements ToXContentObject, Streamable {
 
     private String name;
 
@@ -112,12 +112,12 @@ public class RestoreInfo implements ToXContent, Streamable {
     }
 
     static final class Fields {
-        static final XContentBuilderString SNAPSHOT = new XContentBuilderString("snapshot");
-        static final XContentBuilderString INDICES = new XContentBuilderString("indices");
-        static final XContentBuilderString SHARDS = new XContentBuilderString("shards");
-        static final XContentBuilderString TOTAL = new XContentBuilderString("total");
-        static final XContentBuilderString FAILED = new XContentBuilderString("failed");
-        static final XContentBuilderString SUCCESSFUL = new XContentBuilderString("successful");
+        static final String SNAPSHOT = "snapshot";
+        static final String INDICES = "indices";
+        static final String SHARDS = "shards";
+        static final String TOTAL = "total";
+        static final String FAILED = "failed";
+        static final String SUCCESSFUL = "successful";
     }
 
     /**

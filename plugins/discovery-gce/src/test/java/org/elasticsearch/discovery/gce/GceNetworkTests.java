@@ -20,12 +20,14 @@
 package org.elasticsearch.discovery.gce;
 
 import org.elasticsearch.cloud.gce.network.GceNameResolver;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.util.Collections;
 
 import static org.hamcrest.Matchers.arrayContaining;
 import static org.hamcrest.Matchers.containsString;
@@ -79,7 +81,8 @@ public class GceNetworkTests extends ESTestCase {
      * network.host: _local_
      */
     public void networkHostCoreLocal() throws IOException {
-        resolveGce("_local_", new NetworkService(Settings.EMPTY).resolveBindHostAddresses(new String[] { NetworkService.DEFAULT_NETWORK_HOST }));
+        resolveGce("_local_", new NetworkService(Collections.emptyList())
+            .resolveBindHostAddresses(new String[] { NetworkService.DEFAULT_NETWORK_HOST }));
     }
 
     /**
@@ -103,11 +106,11 @@ public class GceNetworkTests extends ESTestCase {
                 .put("network.host", gceNetworkSetting)
                 .build();
 
-        NetworkService networkService = new NetworkService(nodeSettings);
-        GceComputeServiceMock mock = new GceComputeServiceMock(nodeSettings, networkService);
-        networkService.addCustomNameResolver(new GceNameResolver(nodeSettings, mock));
+        GceMetadataServiceMock mock = new GceMetadataServiceMock(nodeSettings);
+        NetworkService networkService = new NetworkService(Collections.singletonList(new GceNameResolver(nodeSettings, mock)));
         try {
-            InetAddress[] addresses = networkService.resolveBindHostAddresses(null);
+            InetAddress[] addresses = networkService.resolveBindHostAddresses(
+                NetworkService.GLOBAL_NETWORK_BINDHOST_SETTING.get(nodeSettings).toArray(Strings.EMPTY_ARRAY));
             if (expected == null) {
                 fail("We should get a IllegalArgumentException when setting network.host: _gce:doesnotexist_");
             }

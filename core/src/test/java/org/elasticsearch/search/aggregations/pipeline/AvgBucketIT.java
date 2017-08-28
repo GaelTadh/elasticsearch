@@ -21,10 +21,11 @@ package org.elasticsearch.search.aggregations.pipeline;
 
 import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.search.aggregations.BucketOrder;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram.Bucket;
+import org.elasticsearch.search.aggregations.bucket.terms.IncludeExclude;
 import org.elasticsearch.search.aggregations.bucket.terms.Terms;
-import org.elasticsearch.search.aggregations.bucket.terms.Terms.Order;
 import org.elasticsearch.search.aggregations.metrics.sum.Sum;
 import org.elasticsearch.search.aggregations.pipeline.BucketHelpers.GapPolicy;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -57,7 +58,8 @@ public class AvgBucketIT extends ESIntegTestCase {
 
     @Override
     public void setupSuiteScopeCluster() throws Exception {
-        createIndex("idx");
+        assertAcked(client().admin().indices().prepareCreate("idx")
+                .addMapping("type", "tag", "type=keyword").get());
         createIndex("idx_unmapped");
 
         numDocs = randomIntBetween(6, 20);
@@ -92,8 +94,8 @@ public class AvgBucketIT extends ESIntegTestCase {
     public void testDocCountTopLevel() throws Exception {
         SearchResponse response = client().prepareSearch("idx")
                 .addAggregation(histogram("histo").field(SINGLE_VALUED_FIELD_NAME).interval(interval)
-                        .extendedBounds((long) minRandomValue, (long) maxRandomValue))
-                .addAggregation(avgBucket("avg_bucket").setBucketsPaths("histo>_count")).execute().actionGet();
+                        .extendedBounds(minRandomValue, maxRandomValue))
+                .addAggregation(avgBucket("avg_bucket", "histo>_count")).execute().actionGet();
 
         assertSearchResponse(response);
 
@@ -127,18 +129,18 @@ public class AvgBucketIT extends ESIntegTestCase {
                 .addAggregation(
                         terms("terms")
                                 .field("tag")
-                                .order(Order.term(true))
+                                .order(BucketOrder.key(true))
                                 .subAggregation(
                                         histogram("histo").field(SINGLE_VALUED_FIELD_NAME).interval(interval)
-                                                .extendedBounds((long) minRandomValue, (long) maxRandomValue))
-                                .subAggregation(avgBucket("avg_bucket").setBucketsPaths("histo>_count"))).execute().actionGet();
+                                                .extendedBounds(minRandomValue, maxRandomValue))
+                .subAggregation(avgBucket("avg_bucket", "histo>_count"))).execute().actionGet();
 
         assertSearchResponse(response);
 
         Terms terms = response.getAggregations().get("terms");
         assertThat(terms, notNullValue());
         assertThat(terms.getName(), equalTo("terms"));
-        List<Terms.Bucket> termsBuckets = terms.getBuckets();
+        List<? extends Terms.Bucket> termsBuckets = terms.getBuckets();
         assertThat(termsBuckets.size(), equalTo(interval));
 
         for (int i = 0; i < interval; ++i) {
@@ -173,14 +175,14 @@ public class AvgBucketIT extends ESIntegTestCase {
         SearchResponse response = client()
                 .prepareSearch("idx")
                 .addAggregation(terms("terms").field("tag").subAggregation(sum("sum").field(SINGLE_VALUED_FIELD_NAME)))
-                .addAggregation(avgBucket("avg_bucket").setBucketsPaths("terms>sum")).execute().actionGet();
+                .addAggregation(avgBucket("avg_bucket", "terms>sum")).execute().actionGet();
 
         assertSearchResponse(response);
 
         Terms terms = response.getAggregations().get("terms");
         assertThat(terms, notNullValue());
         assertThat(terms.getName(), equalTo("terms"));
-        List<Terms.Bucket> buckets = terms.getBuckets();
+        List<? extends Terms.Bucket> buckets = terms.getBuckets();
         assertThat(buckets.size(), equalTo(interval));
 
         double bucketSum = 0;
@@ -189,7 +191,7 @@ public class AvgBucketIT extends ESIntegTestCase {
             Terms.Bucket bucket = buckets.get(i);
             assertThat(bucket, notNullValue());
             assertThat((String) bucket.getKey(), equalTo("tag" + (i % interval)));
-            assertThat(bucket.getDocCount(), greaterThan(0l));
+            assertThat(bucket.getDocCount(), greaterThan(0L));
             Sum sum = bucket.getAggregations().get("sum");
             assertThat(sum, notNullValue());
             count++;
@@ -209,19 +211,19 @@ public class AvgBucketIT extends ESIntegTestCase {
                 .addAggregation(
                         terms("terms")
                                 .field("tag")
-                                .order(Order.term(true))
+                                .order(BucketOrder.key(true))
                                 .subAggregation(
                                         histogram("histo").field(SINGLE_VALUED_FIELD_NAME).interval(interval)
-                                                .extendedBounds((long) minRandomValue, (long) maxRandomValue)
+                                                .extendedBounds(minRandomValue, maxRandomValue)
                                                 .subAggregation(sum("sum").field(SINGLE_VALUED_FIELD_NAME)))
-                                .subAggregation(avgBucket("avg_bucket").setBucketsPaths("histo>sum"))).execute().actionGet();
+                .subAggregation(avgBucket("avg_bucket", "histo>sum"))).execute().actionGet();
 
         assertSearchResponse(response);
 
         Terms terms = response.getAggregations().get("terms");
         assertThat(terms, notNullValue());
         assertThat(terms.getName(), equalTo("terms"));
-        List<Terms.Bucket> termsBuckets = terms.getBuckets();
+        List<? extends Terms.Bucket> termsBuckets = terms.getBuckets();
         assertThat(termsBuckets.size(), equalTo(interval));
 
         for (int i = 0; i < interval; ++i) {
@@ -262,12 +264,12 @@ public class AvgBucketIT extends ESIntegTestCase {
                 .addAggregation(
                         terms("terms")
                                 .field("tag")
-                                .order(Order.term(true))
+                                .order(BucketOrder.key(true))
                                 .subAggregation(
                                         histogram("histo").field(SINGLE_VALUED_FIELD_NAME).interval(interval)
-                                                .extendedBounds((long) minRandomValue, (long) maxRandomValue)
+                                                .extendedBounds(minRandomValue, maxRandomValue)
                                                 .subAggregation(sum("sum").field(SINGLE_VALUED_FIELD_NAME)))
-                                .subAggregation(avgBucket("avg_bucket").setBucketsPaths("histo>sum").gapPolicy(GapPolicy.INSERT_ZEROS)))
+                .subAggregation(avgBucket("avg_bucket", "histo>sum").gapPolicy(GapPolicy.INSERT_ZEROS)))
                 .execute().actionGet();
 
         assertSearchResponse(response);
@@ -275,7 +277,7 @@ public class AvgBucketIT extends ESIntegTestCase {
         Terms terms = response.getAggregations().get("terms");
         assertThat(terms, notNullValue());
         assertThat(terms.getName(), equalTo("terms"));
-        List<Terms.Bucket> termsBuckets = terms.getBuckets();
+        List<? extends Terms.Bucket> termsBuckets = terms.getBuckets();
         assertThat(termsBuckets.size(), equalTo(interval));
 
         for (int i = 0; i < interval; ++i) {
@@ -311,15 +313,16 @@ public class AvgBucketIT extends ESIntegTestCase {
 
     public void testNoBuckets() throws Exception {
         SearchResponse response = client().prepareSearch("idx")
-                .addAggregation(terms("terms").field("tag").exclude("tag.*").subAggregation(sum("sum").field(SINGLE_VALUED_FIELD_NAME)))
-                .addAggregation(avgBucket("avg_bucket").setBucketsPaths("terms>sum")).execute().actionGet();
+                .addAggregation(terms("terms").field("tag").includeExclude(new IncludeExclude(null, "tag.*"))
+                        .subAggregation(sum("sum").field(SINGLE_VALUED_FIELD_NAME)))
+                .addAggregation(avgBucket("avg_bucket", "terms>sum")).execute().actionGet();
 
         assertSearchResponse(response);
 
         Terms terms = response.getAggregations().get("terms");
         assertThat(terms, notNullValue());
         assertThat(terms.getName(), equalTo("terms"));
-        List<Terms.Bucket> buckets = terms.getBuckets();
+        List<? extends Terms.Bucket> buckets = terms.getBuckets();
         assertThat(buckets.size(), equalTo(0));
 
         InternalSimpleValue avgBucketValue = response.getAggregations().get("avg_bucket");
@@ -334,19 +337,19 @@ public class AvgBucketIT extends ESIntegTestCase {
                 .addAggregation(
                         terms("terms")
                                 .field("tag")
-                                .order(Order.term(true))
+                                .order(BucketOrder.key(true))
                                 .subAggregation(
                                         histogram("histo").field(SINGLE_VALUED_FIELD_NAME).interval(interval)
-                                                .extendedBounds((long) minRandomValue, (long) maxRandomValue))
-                                .subAggregation(avgBucket("avg_histo_bucket").setBucketsPaths("histo>_count")))
-                .addAggregation(avgBucket("avg_terms_bucket").setBucketsPaths("terms>avg_histo_bucket")).execute().actionGet();
+                                                .extendedBounds(minRandomValue, maxRandomValue))
+                .subAggregation(avgBucket("avg_histo_bucket", "histo>_count")))
+                .addAggregation(avgBucket("avg_terms_bucket", "terms>avg_histo_bucket")).execute().actionGet();
 
         assertSearchResponse(response);
 
         Terms terms = response.getAggregations().get("terms");
         assertThat(terms, notNullValue());
         assertThat(terms.getName(), equalTo("terms"));
-        List<Terms.Bucket> termsBuckets = terms.getBuckets();
+        List<? extends Terms.Bucket> termsBuckets = terms.getBuckets();
         assertThat(termsBuckets.size(), equalTo(interval));
 
         double aggTermsSum = 0;

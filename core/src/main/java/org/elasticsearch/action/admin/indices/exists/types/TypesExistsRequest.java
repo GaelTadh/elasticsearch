@@ -29,8 +29,6 @@ import java.io.IOException;
 
 import static org.elasticsearch.action.ValidateActions.addValidationError;
 
-/**
- */
 public class TypesExistsRequest extends MasterNodeReadRequest<TypesExistsRequest> implements IndicesRequest.Replaceable {
 
     private String[] indices;
@@ -52,7 +50,7 @@ public class TypesExistsRequest extends MasterNodeReadRequest<TypesExistsRequest
     }
 
     @Override
-    public TypesExistsRequest indices(String[] indices) {
+    public TypesExistsRequest indices(String... indices) {
         this.indices = indices;
         return this;
     }

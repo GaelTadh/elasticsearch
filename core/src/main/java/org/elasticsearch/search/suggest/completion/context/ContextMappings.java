@@ -27,14 +27,23 @@ import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.Version;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.index.mapper.CompletionFieldMapper;
 import org.elasticsearch.index.mapper.DocumentMapperParser;
 import org.elasticsearch.index.mapper.ParseContext;
-import org.elasticsearch.index.mapper.core.CompletionFieldMapper;
+import org.elasticsearch.search.suggest.completion.context.ContextMapping.Type;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
-import static org.elasticsearch.search.suggest.completion.context.ContextMapping.*;
+import static org.elasticsearch.search.suggest.completion.context.ContextMapping.FIELD_NAME;
+import static org.elasticsearch.search.suggest.completion.context.ContextMapping.FIELD_TYPE;
 
 /**
  * ContextMappings indexes context-enabled suggestion fields
@@ -72,7 +81,9 @@ public class ContextMappings implements ToXContent {
     public ContextMapping get(String name) {
         ContextMapping contextMapping = contextNameMap.get(name);
         if (contextMapping == null) {
-            throw new IllegalArgumentException("Unknown context name[" + name + "], must be one of " + contextNameMap.size());
+            List<String> keys = new ArrayList<>(contextNameMap.keySet());
+            Collections.sort(keys);
+            throw new IllegalArgumentException("Unknown context name [" + name + "], must be one of " + keys.toString());
         }
         return contextMapping;
     }
@@ -106,7 +117,7 @@ public class ContextMappings implements ToXContent {
         private final Map<String, Set<CharSequence>> contexts;
         private final ParseContext.Document document;
 
-        public TypedContextField(String name, String value, int weight, Map<String, Set<CharSequence>> contexts,
+        TypedContextField(String name, String value, int weight, Map<String, Set<CharSequence>> contexts,
                                  ParseContext.Document document) {
             super(name, value, weight);
             this.contexts = contexts;
@@ -143,7 +154,7 @@ public class ContextMappings implements ToXContent {
      * @param queryContexts a map of context mapping name and collected query contexts
      * @return a context-enabled query
      */
-    public ContextQuery toContextQuery(CompletionQuery query, Map<String, List<QueryContext>> queryContexts) {
+    public ContextQuery toContextQuery(CompletionQuery query, Map<String, List<ContextMapping.InternalQueryContext>> queryContexts) {
         ContextQuery typedContextQuery = new ContextQuery(query);
         if (queryContexts.isEmpty() == false) {
             CharsRefBuilder scratch = new CharsRefBuilder();
@@ -152,9 +163,9 @@ public class ContextMappings implements ToXContent {
                 scratch.setCharAt(0, (char) typeId);
                 scratch.setLength(1);
                 ContextMapping mapping = contextMappings.get(typeId);
-                List<QueryContext> queryContext = queryContexts.get(mapping.name());
-                if (queryContext != null) {
-                    for (QueryContext context : queryContext) {
+                List<ContextMapping.InternalQueryContext> internalQueryContext = queryContexts.get(mapping.name());
+                if (internalQueryContext != null) {
+                    for (ContextMapping.InternalQueryContext context : internalQueryContext) {
                         scratch.append(context.context);
                         typedContextQuery.addContext(scratch.toCharsRef(), context.boost, !context.isPrefix);
                         scratch.setLength(1);

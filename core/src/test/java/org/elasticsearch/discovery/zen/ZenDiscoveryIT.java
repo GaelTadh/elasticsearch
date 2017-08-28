@@ -24,27 +24,22 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse;
 import org.elasticsearch.action.admin.indices.recovery.RecoveryResponse;
-import org.elasticsearch.cluster.ClusterChangedEvent;
-import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ClusterStateListener;
+import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.InetSocketTransportAddress;
-import org.elasticsearch.common.transport.LocalTransportAddress;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoveryStats;
-import org.elasticsearch.discovery.zen.elect.ElectMasterService;
-import org.elasticsearch.discovery.zen.fd.FaultDetection;
-import org.elasticsearch.discovery.zen.membership.MembershipAction;
-import org.elasticsearch.discovery.zen.publish.PublishClusterStateAction;
+import org.elasticsearch.node.Node;
 import org.elasticsearch.test.ESIntegTestCase;
+import org.elasticsearch.test.TestCustomMetaData;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.BytesTransportRequest;
@@ -55,62 +50,48 @@ import org.elasticsearch.transport.TransportService;
 import org.hamcrest.Matchers;
 
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static java.util.Collections.emptyMap;
+import static java.util.Collections.emptySet;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.either;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
-import static org.hamcrest.Matchers.nullValue;
-import static org.hamcrest.Matchers.sameInstance;
 
 @ESIntegTestCase.ClusterScope(scope = ESIntegTestCase.Scope.TEST, numDataNodes = 0, numClientNodes = 0)
-@ESIntegTestCase.SuppressLocalMode
+@TestLogging("_root:DEBUG")
 public class ZenDiscoveryIT extends ESIntegTestCase {
-    public void testChangeRejoinOnMasterOptionIsDynamic() throws Exception {
-        Settings nodeSettings = Settings.settingsBuilder()
-                .put("discovery.type", "zen") // <-- To override the local setting if set externally
-                .build();
-        String nodeName = internalCluster().startNode(nodeSettings);
-        ZenDiscovery zenDiscovery = (ZenDiscovery) internalCluster().getInstance(Discovery.class, nodeName);
-        assertThat(zenDiscovery.isRejoinOnMasterGone(), is(true));
-
-        client().admin().cluster().prepareUpdateSettings()
-                .setTransientSettings(Settings.builder().put(ZenDiscovery.SETTING_REJOIN_ON_MASTER_GONE, false))
-                .get();
-
-        assertThat(zenDiscovery.isRejoinOnMasterGone(), is(false));
-    }
 
     public void testNoShardRelocationsOccurWhenElectedMasterNodeFails() throws Exception {
         Settings defaultSettings = Settings.builder()
-                .put(FaultDetection.SETTING_PING_TIMEOUT, "1s")
-                .put(FaultDetection.SETTING_PING_RETRIES, "1")
-                .put("discovery.type", "zen")
+                .put(FaultDetection.PING_TIMEOUT_SETTING.getKey(), "1s")
+                .put(FaultDetection.PING_RETRIES_SETTING.getKey(), "1")
                 .build();
 
         Settings masterNodeSettings = Settings.builder()
-                .put("node.data", false)
+                .put(Node.NODE_DATA_SETTING.getKey(), false)
                 .put(defaultSettings)
                 .build();
-        internalCluster().startNodesAsync(2, masterNodeSettings).get();
+        internalCluster().startNodes(2, masterNodeSettings);
         Settings dateNodeSettings = Settings.builder()
-                .put("node.master", false)
+                .put(Node.NODE_MASTER_SETTING.getKey(), false)
                 .put(defaultSettings)
                 .build();
-        internalCluster().startNodesAsync(2, dateNodeSettings).get();
+        internalCluster().startNodes(2, dateNodeSettings);
         ClusterHealthResponse clusterHealthResponse = client().admin().cluster().prepareHealth()
                 .setWaitForEvents(Priority.LANGUID)
                 .setWaitForNodes("4")
-                .setWaitForRelocatingShards(0)
+                .setWaitForNoRelocatingShards(true)
                 .get();
         assertThat(clusterHealthResponse.isTimedOut(), is(false));
 
@@ -121,13 +102,10 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
 
         final String oldMaster = internalCluster().getMasterName();
         internalCluster().stopCurrentMasterNode();
-        assertBusy(new Runnable() {
-            @Override
-            public void run() {
-                String current = internalCluster().getMasterName();
-                assertThat(current, notNullValue());
-                assertThat(current, not(equalTo(oldMaster)));
-            }
+        assertBusy(() -> {
+            String current = internalCluster().getMasterName();
+            assertThat(current, notNullValue());
+            assertThat(current, not(equalTo(oldMaster)));
         });
         ensureSearchable("test");
 
@@ -136,39 +114,34 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
         assertThat(numRecoveriesAfterNewMaster, equalTo(numRecoveriesBeforeNewMaster));
     }
 
-    @TestLogging(value = "action.admin.cluster.health:TRACE")
     public void testNodeFailuresAreProcessedOnce() throws ExecutionException, InterruptedException, IOException {
         Settings defaultSettings = Settings.builder()
-                .put(FaultDetection.SETTING_PING_TIMEOUT, "1s")
-                .put(FaultDetection.SETTING_PING_RETRIES, "1")
-                .put("discovery.type", "zen")
+                .put(FaultDetection.PING_TIMEOUT_SETTING.getKey(), "1s")
+                .put(FaultDetection.PING_RETRIES_SETTING.getKey(), "1")
                 .build();
 
         Settings masterNodeSettings = Settings.builder()
-                .put("node.data", false)
+                .put(Node.NODE_DATA_SETTING.getKey(), false)
                 .put(defaultSettings)
                 .build();
         String master = internalCluster().startNode(masterNodeSettings);
         Settings dateNodeSettings = Settings.builder()
-                .put("node.master", false)
+                .put(Node.NODE_MASTER_SETTING.getKey(), false)
                 .put(defaultSettings)
                 .build();
-        internalCluster().startNodesAsync(2, dateNodeSettings).get();
+        internalCluster().startNodes(2, dateNodeSettings);
         client().admin().cluster().prepareHealth().setWaitForNodes("3").get();
 
         ClusterService clusterService = internalCluster().getInstance(ClusterService.class, master);
-        final ArrayList<ClusterState> statesFound = new ArrayList<>();
+        final AtomicInteger numUpdates = new AtomicInteger();
         final CountDownLatch nodesStopped = new CountDownLatch(1);
-        clusterService.add(new ClusterStateListener() {
-            @Override
-            public void clusterChanged(ClusterChangedEvent event) {
-                statesFound.add(event.state());
-                try {
-                    // block until both nodes have stopped to accumulate node failures
-                    nodesStopped.await();
-                } catch (InterruptedException e) {
-                    //meh
-                }
+        clusterService.addStateApplier(event -> {
+            numUpdates.incrementAndGet();
+            try {
+                // block until both nodes have stopped to accumulate node failures
+                nodesStopped.await();
+            } catch (InterruptedException e) {
+                //meh
             }
         });
 
@@ -177,15 +150,11 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
         nodesStopped.countDown();
 
         client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).get(); // wait for all to be processed
-        assertThat(statesFound, Matchers.hasSize(2));
+        assertThat(numUpdates.get(), either(equalTo(1)).or(equalTo(2))); // due to batching, both nodes can be handled in same CS update
     }
 
     public void testNodeRejectsClusterStateWithWrongMasterNode() throws Exception {
-        Settings settings = Settings.builder()
-                .put("discovery.type", "zen")
-                .build();
-        List<String> nodeNames = internalCluster().startNodesAsync(2, settings).get();
-        client().admin().cluster().prepareHealth().setWaitForNodes("2").get();
+        List<String> nodeNames = internalCluster().startNodes(2);
 
         List<String> nonMasterNodes = new ArrayList<>(nodeNames);
         nonMasterNodes.remove(internalCluster().getMasterName());
@@ -194,21 +163,23 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
         ClusterState state = internalCluster().getInstance(ClusterService.class).state();
         DiscoveryNode node = null;
         for (DiscoveryNode discoveryNode : state.nodes()) {
-            if (discoveryNode.name().equals(noneMasterNode)) {
+            if (discoveryNode.getName().equals(noneMasterNode)) {
                 node = discoveryNode;
             }
         }
         assert node != null;
 
         DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(state.nodes())
-                .put(new DiscoveryNode("abc", new LocalTransportAddress("abc"), Version.CURRENT)).masterNodeId("abc");
+                .add(new DiscoveryNode("abc", buildNewFakeTransportAddress(), emptyMap(),
+                        emptySet(), Version.CURRENT)).masterNodeId("abc");
         ClusterState.Builder builder = ClusterState.builder(state);
         builder.nodes(nodes);
-        BytesReference bytes = PublishClusterStateAction.serializeFullClusterState(builder.build(), node.version());
+        BytesReference bytes = PublishClusterStateAction.serializeFullClusterState(builder.build(), node.getVersion());
 
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicReference<Exception> reference = new AtomicReference<>();
-        internalCluster().getInstance(TransportService.class, noneMasterNode).sendRequest(node, PublishClusterStateAction.SEND_ACTION_NAME, new BytesTransportRequest(bytes, Version.CURRENT), new EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
+        internalCluster().getInstance(TransportService.class, noneMasterNode).sendRequest(node, PublishClusterStateAction.SEND_ACTION_NAME,
+                new BytesTransportRequest(bytes, Version.CURRENT), new EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
 
             @Override
             public void handleResponse(TransportResponse.Empty response) {
@@ -225,43 +196,59 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
         });
         latch.await();
         assertThat(reference.get(), notNullValue());
-        assertThat(ExceptionsHelper.detailedMessage(reference.get()), containsString("cluster state from a different master than the current one, rejecting"));
+        assertThat(ExceptionsHelper.detailedMessage(reference.get()),
+                containsString("cluster state from a different master than the current one, rejecting"));
     }
 
-    public void testHandleNodeJoin_incompatibleMinVersion() throws UnknownHostException {
-        Settings nodeSettings = Settings.settingsBuilder()
-                .put("discovery.type", "zen") // <-- To override the local setting if set externally
-                .build();
-        String nodeName = internalCluster().startNode(nodeSettings, Version.V_2_0_0_beta1);
-        ZenDiscovery zenDiscovery = (ZenDiscovery) internalCluster().getInstance(Discovery.class, nodeName);
+    public void testHandleNodeJoin_incompatibleClusterState() throws UnknownHostException {
+        Settings nodeSettings = Settings.builder()
+            .put("discovery.type", "zen") // <-- To override the local setting if set externally
+            .build();
+        String masterOnlyNode = internalCluster().startMasterOnlyNode(nodeSettings);
+        String node1 = internalCluster().startNode(nodeSettings);
+        ZenDiscovery zenDiscovery = (ZenDiscovery) internalCluster().getInstance(Discovery.class, masterOnlyNode);
+        ClusterService clusterService = internalCluster().getInstance(ClusterService.class, node1);
+        final ClusterState state = clusterService.state();
+        MetaData.Builder mdBuilder = MetaData.builder(state.metaData());
+        mdBuilder.putCustom(CustomMetaData.TYPE, new CustomMetaData("data"));
+        ClusterState stateWithCustomMetaData = ClusterState.builder(state).metaData(mdBuilder).build();
 
-        DiscoveryNode node = new DiscoveryNode("_node_id", new InetSocketTransportAddress(InetAddress.getByName("0.0.0.0"), 0), Version.V_1_6_0);
         final AtomicReference<IllegalStateException> holder = new AtomicReference<>();
-        zenDiscovery.handleJoinRequest(node, new MembershipAction.JoinCallback() {
+        DiscoveryNode node = state.nodes().getLocalNode();
+        zenDiscovery.handleJoinRequest(node, stateWithCustomMetaData, new MembershipAction.JoinCallback() {
             @Override
             public void onSuccess() {
             }
 
             @Override
-            public void onFailure(Throwable t) {
-                holder.set((IllegalStateException) t);
+            public void onFailure(Exception e) {
+                holder.set((IllegalStateException) e);
             }
         });
 
         assertThat(holder.get(), notNullValue());
-        assertThat(holder.get().getMessage(), equalTo("Can't handle join request from a node with a version [1.6.0] that is lower than the minimum compatible version [" + Version.V_2_0_0_beta1.minimumCompatibilityVersion() + "]"));
+        assertThat(holder.get().getMessage(), equalTo("failure when sending a validation request to node"));
     }
 
-    public void testJoinElectedMaster_incompatibleMinVersion() {
-        ElectMasterService electMasterService = new ElectMasterService(Settings.EMPTY, Version.V_2_0_0_beta1);
+    public static class CustomMetaData extends TestCustomMetaData {
+        public static final String TYPE = "custom_md";
 
-        DiscoveryNode node = new DiscoveryNode("_node_id", new LocalTransportAddress("_id"), Version.V_2_0_0_beta1);
-        assertThat(electMasterService.electMaster(Collections.singletonList(node)), sameInstance(node));
-        node = new DiscoveryNode("_node_id", new LocalTransportAddress("_id"), Version.V_1_6_0);
-        assertThat("Can't join master because version 1.6.0 is lower than the minimum compatable version 2.0.0 can support", electMasterService.electMaster(Collections.singletonList(node)), nullValue());
+        CustomMetaData(String data) {
+            super(data);
+        }
+
+        @Override
+        public String getWriteableName() {
+            return TYPE;
+        }
+
+        @Override
+        public EnumSet<MetaData.XContentContext> context() {
+            return EnumSet.of(MetaData.XContentContext.GATEWAY, MetaData.XContentContext.SNAPSHOT);
+        }
     }
 
-    public void testDiscoveryStats() throws IOException {
+    public void testDiscoveryStats() throws Exception {
         String expectedStatsJsonResponse = "{\n" +
                 "  \"discovery\" : {\n" +
                 "    \"cluster_state_queue\" : {\n" +
@@ -272,16 +259,17 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
                 "  }\n" +
                 "}";
 
-        Settings nodeSettings = Settings.settingsBuilder()
-                .put("discovery.type", "zen") // <-- To override the local setting if set externally
-                .build();
-        internalCluster().startNode(nodeSettings);
+        internalCluster().startNode();
+        ensureGreen(); // ensures that all events are processed (in particular state recovery fully completed)
+        assertBusy(() ->
+            assertThat(internalCluster().clusterService(internalCluster().getMasterName()).getMasterService().numberOfPendingTasks(),
+                equalTo(0))); // see https://github.com/elastic/elasticsearch/issues/24388
 
         logger.info("--> request node discovery stats");
         NodesStatsResponse statsResponse = client().admin().cluster().prepareNodesStats().clear().setDiscovery(true).get();
-        assertThat(statsResponse.getNodes().length, equalTo(1));
+        assertThat(statsResponse.getNodes().size(), equalTo(1));
 
-        DiscoveryStats stats = statsResponse.getNodes()[0].getDiscoveryStats();
+        DiscoveryStats stats = statsResponse.getNodes().get(0).getDiscoveryStats();
         assertThat(stats.getQueueStats(), notNullValue());
         assertThat(stats.getQueueStats().getTotal(), equalTo(0));
         assertThat(stats.getQueueStats().getCommitted(), equalTo(0));

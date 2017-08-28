@@ -29,9 +29,6 @@ import org.elasticsearch.transport.TransportRequest;
 
 import java.io.IOException;
 
-/**
- *
- */
 public abstract class BroadcastShardRequest extends TransportRequest implements IndicesRequest {
 
     private ShardId shardId;
@@ -42,7 +39,6 @@ public abstract class BroadcastShardRequest extends TransportRequest implements 
     }
 
     protected BroadcastShardRequest(ShardId shardId, BroadcastRequest request) {
-        super(request);
         this.shardId = shardId;
         this.originalIndices = new OriginalIndices(request);
     }

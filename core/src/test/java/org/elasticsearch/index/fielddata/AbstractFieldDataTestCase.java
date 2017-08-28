@@ -23,34 +23,45 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.StringField;
-import org.apache.lucene.index.*;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.store.RAMDirectory;
-import org.elasticsearch.Version;
-import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.lucene.index.ElasticsearchDirectoryReader;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
+import org.elasticsearch.index.fielddata.IndexFieldData.XFieldComparatorSource.Nested;
+import org.elasticsearch.index.mapper.BinaryFieldMapper;
 import org.elasticsearch.index.mapper.ContentPath;
+import org.elasticsearch.index.mapper.GeoPointFieldMapper;
+import org.elasticsearch.index.mapper.KeywordFieldMapper;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.Mapper.BuilderContext;
-import org.elasticsearch.index.mapper.MapperBuilders;
+import org.elasticsearch.index.mapper.MapperService.MergeReason;
 import org.elasticsearch.index.mapper.MapperService;
-import org.elasticsearch.index.mapper.geo.GeoPointFieldMapper;
-import org.elasticsearch.index.mapper.geo.GeoPointFieldMapperLegacy;
-import org.elasticsearch.index.mapper.internal.ParentFieldMapper;
+import org.elasticsearch.index.mapper.NumberFieldMapper;
+import org.elasticsearch.index.mapper.ParentFieldMapper;
+import org.elasticsearch.index.mapper.TextFieldMapper;
+import org.elasticsearch.index.query.QueryShardContext;
 import org.elasticsearch.index.shard.ShardId;
+import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.fielddata.cache.IndicesFieldDataCache;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESSingleNodeTestCase;
-import org.elasticsearch.test.VersionUtils;
+import org.elasticsearch.test.InternalSettingsPlugin;
 import org.junit.After;
 import org.junit.Before;
 
 import java.io.IOException;
+import java.util.Collection;
+import java.util.List;
 
-import static org.elasticsearch.index.fielddata.IndexFieldData.XFieldComparatorSource.Nested;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.sameInstance;
@@ -58,13 +69,14 @@ import static org.hamcrest.Matchers.sameInstance;
 public abstract class AbstractFieldDataTestCase extends ESSingleNodeTestCase {
 
     protected IndexService indexService;
-    protected IndexFieldDataService ifdService;
     protected MapperService mapperService;
     protected IndexWriter writer;
-    protected LeafReaderContext readerContext;
-    protected DirectoryReader topLevelReader;
+    protected List<LeafReaderContext> readerContexts = null;
+    protected DirectoryReader topLevelReader = null;
     protected IndicesFieldDataCache indicesFieldDataCache;
-    protected abstract FieldDataType getFieldDataType();
+    protected QueryShardContext shardContext;
+
+    protected abstract String getFieldDataType();
 
     protected boolean hasDocValues() {
         return false;
@@ -74,79 +86,87 @@ public abstract class AbstractFieldDataTestCase extends ESSingleNodeTestCase {
         return getForField(getFieldDataType(), fieldName, hasDocValues());
     }
 
-    public <IFD extends IndexFieldData<?>> IFD getForField(FieldDataType type, String fieldName) {
+    public <IFD extends IndexFieldData<?>> IFD getForField(String type, String fieldName) {
         return getForField(type, fieldName, hasDocValues());
     }
 
-    public <IFD extends IndexFieldData<?>> IFD getForField(FieldDataType type, String fieldName, boolean docValues) {
+    @Override
+    protected Collection<Class<? extends Plugin>> getPlugins() {
+        return pluginList(InternalSettingsPlugin.class);
+    }
+
+    public <IFD extends IndexFieldData<?>> IFD getForField(String type, String fieldName, boolean docValues) {
         final MappedFieldType fieldType;
         final BuilderContext context = new BuilderContext(indexService.getIndexSettings().getSettings(), new ContentPath(1));
-        if (type.getType().equals("string")) {
-            fieldType = MapperBuilders.stringField(fieldName).tokenized(false).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("float")) {
-            fieldType = MapperBuilders.floatField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("double")) {
-            fieldType = MapperBuilders.doubleField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("long")) {
-            fieldType = MapperBuilders.longField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("int")) {
-            fieldType = MapperBuilders.integerField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("short")) {
-            fieldType = MapperBuilders.shortField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("byte")) {
-            fieldType = MapperBuilders.byteField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
-        } else if (type.getType().equals("geo_point")) {
-            if (indexService.getIndexSettings().getIndexVersionCreated().before(Version.V_2_2_0)) {
-                fieldType =  new GeoPointFieldMapperLegacy.Builder(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
+        if (type.equals("string")) {
+            if (docValues) {
+                fieldType = new KeywordFieldMapper.Builder(fieldName).build(context).fieldType();
             } else {
-                fieldType = new GeoPointFieldMapper.Builder(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
+                fieldType = new TextFieldMapper.Builder(fieldName).fielddata(true).build(context).fieldType();
             }
-        } else if (type.getType().equals("_parent")) {
+        } else if (type.equals("float")) {
+            fieldType = new NumberFieldMapper.Builder(fieldName, NumberFieldMapper.NumberType.FLOAT)
+                    .docValues(docValues).build(context).fieldType();
+        } else if (type.equals("double")) {
+            fieldType = new NumberFieldMapper.Builder(fieldName, NumberFieldMapper.NumberType.DOUBLE)
+                    .docValues(docValues).build(context).fieldType();
+        } else if (type.equals("long")) {
+            fieldType = new NumberFieldMapper.Builder(fieldName, NumberFieldMapper.NumberType.LONG)
+                    .docValues(docValues).build(context).fieldType();
+        } else if (type.equals("int")) {
+            fieldType = new NumberFieldMapper.Builder(fieldName, NumberFieldMapper.NumberType.INTEGER)
+                    .docValues(docValues).build(context).fieldType();
+        } else if (type.equals("short")) {
+            fieldType = new NumberFieldMapper.Builder(fieldName, NumberFieldMapper.NumberType.SHORT)
+                    .docValues(docValues).build(context).fieldType();
+        } else if (type.equals("byte")) {
+            fieldType = new NumberFieldMapper.Builder(fieldName, NumberFieldMapper.NumberType.BYTE)
+                    .docValues(docValues).build(context).fieldType();
+        } else if (type.equals("geo_point")) {
+            fieldType = new GeoPointFieldMapper.Builder(fieldName).docValues(docValues).build(context).fieldType();
+        } else if (type.equals("_parent")) {
             fieldType = new ParentFieldMapper.Builder("_type").type(fieldName).build(context).fieldType();
-        } else if (type.getType().equals("binary")) {
-            fieldType = MapperBuilders.binaryField(fieldName).docValues(docValues).fieldDataSettings(type.getSettings()).build(context).fieldType();
+        } else if (type.equals("binary")) {
+            fieldType = new BinaryFieldMapper.Builder(fieldName).docValues(docValues).build(context).fieldType();
         } else {
-            throw new UnsupportedOperationException(type.getType());
+            throw new UnsupportedOperationException(type);
         }
-        return ifdService.getForField(fieldType);
+        return shardContext.getForField(fieldType);
     }
 
     @Before
     public void setup() throws Exception {
-        Version version = VersionUtils.randomVersionBetween(random(), Version.V_2_0_0, Version.CURRENT);
-        Settings settings = Settings.builder().put("index.fielddata.cache", "none")
-                .put(IndexMetaData.SETTING_VERSION_CREATED, version).build();
-        indexService = createIndex("test", settings);
+        indexService = createIndex("test", Settings.builder().build());
         mapperService = indexService.mapperService();
-        indicesFieldDataCache = getInstanceFromNode(IndicesFieldDataCache.class);
-        ifdService = indexService.fieldData();
+        indicesFieldDataCache = getInstanceFromNode(IndicesService.class).getIndicesFieldDataCache();
         // LogByteSizeMP to preserve doc ID order
         writer = new IndexWriter(new RAMDirectory(), new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(new LogByteSizeMergePolicy()));
+        shardContext = indexService.newQueryShardContext(0, null, () -> 0, null);
     }
 
-    protected final LeafReaderContext refreshReader() throws Exception {
-        if (readerContext != null) {
-            readerContext.reader().close();
+    protected final List<LeafReaderContext> refreshReader() throws Exception {
+        if (readerContexts != null && topLevelReader != null) {
+            topLevelReader.close();
         }
-        topLevelReader = ElasticsearchDirectoryReader.wrap(DirectoryReader.open(writer, true), new ShardId("foo", 1));
-        LeafReader reader = SlowCompositeReaderWrapper.wrap(topLevelReader);
-        readerContext = reader.getContext();
-        return readerContext;
+        topLevelReader = ElasticsearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "_na_", 1));
+        readerContexts = topLevelReader.leaves();
+        return readerContexts;
     }
 
     @Override
     @After
     public void tearDown() throws Exception {
         super.tearDown();
-        if (readerContext != null) {
-            readerContext.reader().close();
+        if (topLevelReader != null) {
+            topLevelReader.close();
         }
         writer.close();
+        shardContext = null;
     }
 
     protected Nested createNested(IndexSearcher searcher, Query parentFilter, Query childFilter) throws IOException {
         BitsetFilterCache s = indexService.cache().bitsetFilterCache();
-        return new Nested(s.getBitSetProducer(parentFilter), searcher.createNormalizedWeight(childFilter, false));
+        return new Nested(s.getBitSetProducer(parentFilter), childFilter);
     }
 
     public void testEmpty() throws Exception {
@@ -157,14 +177,16 @@ public abstract class AbstractFieldDataTestCase extends ESSingleNodeTestCase {
 
         IndexFieldData fieldData = getForField("non_existing_field");
         int max = randomInt(7);
-        AtomicFieldData previous = null;
-        for (int i = 0; i < max; i++) {
-            AtomicFieldData current = fieldData.load(readerContext);
-            assertThat(current.ramBytesUsed(), equalTo(0l));
-            if (previous != null) {
-                assertThat(current, not(sameInstance(previous)));
+        for (LeafReaderContext readerContext : readerContexts) {
+            AtomicFieldData previous = null;
+            for (int i = 0; i < max; i++) {
+                AtomicFieldData current = fieldData.load(readerContext);
+                assertThat(current.ramBytesUsed(), equalTo(0L));
+                if (previous != null) {
+                    assertThat(current, not(sameInstance(previous)));
+                }
+                previous = current;
             }
-            previous = current;
         }
     }
 }

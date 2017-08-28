@@ -26,7 +26,10 @@ import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.BoostAttribute;
-import org.apache.lucene.util.*;
+import org.apache.lucene.util.ArrayUtil;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.StreamInput;
 
@@ -79,7 +82,7 @@ import static org.apache.lucene.util.ArrayUtil.grow;
  * If the field statistics were requested ({@code hasFieldStatistics} is true,
  * see {@code headerRef}), the following numbers are stored:
  * <ul>
- * <li>vlong: sum of total term freqencies of the field (sumTotalTermFreq)</li>
+ * <li>vlong: sum of total term frequencies of the field (sumTotalTermFreq)</li>
  * <li>vlong: sum of document frequencies for each term (sumDocFreq)</li>
  * <li>vint: number of documents in the shard that has an entry for this field
  * (docCount)</li>
@@ -102,13 +105,13 @@ import static org.apache.lucene.util.ArrayUtil.grow;
  * <li>vint: frequency (always returned)</li>
  * <li>
  * <ul>
- * <li>vint: position_1 (if positions == true)</li>
- * <li>vint: startOffset_1 (if offset == true)</li>
- * <li>vint: endOffset_1 (if offset == true)</li>
- * <li>BytesRef: payload_1 (if payloads == true)</li>
+ * <li>vint: position_1 (if positions)</li>
+ * <li>vint: startOffset_1 (if offset)</li>
+ * <li>vint: endOffset_1 (if offset)</li>
+ * <li>BytesRef: payload_1 (if payloads)</li>
  * <li>...</li>
- * <li>vint: endOffset_freqency (if offset == true)</li>
- * <li>BytesRef: payload_freqency (if payloads == true)</li>
+ * <li>vint: endOffset_freqency (if offset)</li>
+ * <li>BytesRef: payload_freqency (if payloads)</li>
  * </ul></li>
  * </ul>
  */
@@ -127,7 +130,7 @@ public final class TermVectorsFields extends Fields {
      * @param termVectors Stores the actual term vectors as a {@link BytesRef}.
      */
     public TermVectorsFields(BytesReference headerRef, BytesReference termVectors) throws IOException {
-        StreamInput header = StreamInput.wrap(headerRef.toBytesArray());
+        StreamInput header = headerRef.streamInput();
         fieldMap = new ObjectLongHashMap<>();
         // here we read the header to fill the field offset map
         String headerString = header.readString();
@@ -171,7 +174,7 @@ public final class TermVectorsFields extends Fields {
     public Terms terms(String field) throws IOException {
         // first, find where in the termVectors bytes the actual term vector for
         // this field is stored
-        final int keySlot = fieldMap.indexOf(field); 
+        final int keySlot = fieldMap.indexOf(field);
         if (keySlot < 0) {
             return null; // we don't have it.
         }
@@ -197,8 +200,8 @@ public final class TermVectorsFields extends Fields {
         private long sumDocFreq;
         private int docCount;
 
-        public TermVector(BytesReference termVectors, long readOffset) throws IOException {
-            this.perFieldTermVectorInput = StreamInput.wrap(termVectors.toBytesArray());
+        TermVector(BytesReference termVectors, long readOffset) throws IOException {
+            this.perFieldTermVectorInput = termVectors.streamInput();
             this.readOffset = readOffset;
             reset();
         }
@@ -483,7 +486,7 @@ public final class TermVectorsFields extends Fields {
 
     // read a vInt. this is used if the integer might be negative. In this case,
     // the writer writes a 0 for -1 or value +1 and accordingly we have to
-    // substract 1 again
+    // subtract 1 again
     // adds one to mock not existing term freq
     int readPotentiallyNegativeVInt(StreamInput stream) throws IOException {
         return stream.readVInt() - 1;
@@ -491,7 +494,7 @@ public final class TermVectorsFields extends Fields {
 
     // read a vLong. this is used if the integer might be negative. In this
     // case, the writer writes a 0 for -1 or value +1 and accordingly we have to
-    // substract 1 again
+    // subtract 1 again
     // adds one to mock not existing term freq
     long readPotentiallyNegativeVLong(StreamInput stream) throws IOException {
         return stream.readVLong() - 1;

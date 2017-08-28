@@ -22,20 +22,17 @@ package org.elasticsearch.action.admin.indices.cache.clear;
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.broadcast.node.TransportBroadcastByNodeAction;
-import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardsIterator;
+import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.index.IndexService;
-import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.indices.IndicesService;
-import org.elasticsearch.indices.cache.request.IndicesRequestCache;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -46,20 +43,18 @@ import java.util.List;
 /**
  * Indices clear cache action.
  */
-public class TransportClearIndicesCacheAction extends TransportBroadcastByNodeAction<ClearIndicesCacheRequest, ClearIndicesCacheResponse, TransportBroadcastByNodeAction.EmptyResult> {
+public class TransportClearIndicesCacheAction extends TransportBroadcastByNodeAction<ClearIndicesCacheRequest, ClearIndicesCacheResponse,
+    TransportBroadcastByNodeAction.EmptyResult> {
 
     private final IndicesService indicesService;
-    private final IndicesRequestCache indicesRequestCache;
 
     @Inject
     public TransportClearIndicesCacheAction(Settings settings, ThreadPool threadPool, ClusterService clusterService,
-                                            TransportService transportService, IndicesService indicesService,
-                                            IndicesRequestCache indicesQueryCache, ActionFilters actionFilters,
+                                            TransportService transportService, IndicesService indicesService, ActionFilters actionFilters,
                                             IndexNameExpressionResolver indexNameExpressionResolver) {
-        super(settings, ClearIndicesCacheAction.NAME, threadPool, clusterService, transportService, actionFilters, indexNameExpressionResolver,
-                ClearIndicesCacheRequest::new, ThreadPool.Names.MANAGEMENT);
+        super(settings, ClearIndicesCacheAction.NAME, threadPool, clusterService, transportService, actionFilters,
+            indexNameExpressionResolver, ClearIndicesCacheRequest::new, ThreadPool.Names.MANAGEMENT, false);
         this.indicesService = indicesService;
-        this.indicesRequestCache = indicesQueryCache;
     }
 
     @Override
@@ -68,7 +63,9 @@ public class TransportClearIndicesCacheAction extends TransportBroadcastByNodeAc
     }
 
     @Override
-    protected ClearIndicesCacheResponse newResponse(ClearIndicesCacheRequest request, int totalShards, int successfulShards, int failedShards, List<EmptyResult> responses, List<ShardOperationFailedException> shardFailures, ClusterState clusterState) {
+    protected ClearIndicesCacheResponse newResponse(ClearIndicesCacheRequest request, int totalShards, int successfulShards,
+                                                    int failedShards, List<EmptyResult> responses,
+                                                    List<ShardOperationFailedException> shardFailures, ClusterState clusterState) {
         return new ClearIndicesCacheResponse(totalShards, successfulShards, failedShards, shardFailures);
     }
 
@@ -81,46 +78,8 @@ public class TransportClearIndicesCacheAction extends TransportBroadcastByNodeAc
 
     @Override
     protected EmptyResult shardOperation(ClearIndicesCacheRequest request, ShardRouting shardRouting) {
-        IndexService service = indicesService.indexService(shardRouting.getIndex());
-        if (service != null) {
-            IndexShard shard = service.getShardOrNull(shardRouting.id());
-            boolean clearedAtLeastOne = false;
-            if (request.queryCache()) {
-                clearedAtLeastOne = true;
-                service.cache().query().clear("api");
-            }
-            if (request.fieldDataCache()) {
-                clearedAtLeastOne = true;
-                if (request.fields() == null || request.fields().length == 0) {
-                    service.fieldData().clear();
-                } else {
-                    for (String field : request.fields()) {
-                        service.fieldData().clearField(field);
-                    }
-                }
-            }
-            if (request.requestCache()) {
-                clearedAtLeastOne = true;
-                indicesRequestCache.clear(shard);
-            }
-            if (request.recycler()) {
-                logger.debug("Clear CacheRecycler on index [{}]", service.index());
-                clearedAtLeastOne = true;
-                // cacheRecycler.clear();
-            }
-            if (!clearedAtLeastOne) {
-                if (request.fields() != null && request.fields().length > 0) {
-                    // only clear caches relating to the specified fields
-                    for (String field : request.fields()) {
-                        service.fieldData().clearField(field);
-                    }
-                } else {
-                    service.cache().clear("api");
-                    service.fieldData().clear();
-                    indicesRequestCache.clear(shard);
-                }
-            }
-        }
+        indicesService.clearIndexShardCache(shardRouting.shardId(), request.queryCache(), request.fieldDataCache(), request.requestCache(),
+            request.fields());
         return EmptyResult.INSTANCE;
     }
 

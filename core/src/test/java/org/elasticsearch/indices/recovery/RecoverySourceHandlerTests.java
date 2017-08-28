@@ -20,31 +20,51 @@ package org.elasticsearch.indices.recovery;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.RandomIndexWriter;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.store.BaseDirectoryWrapper;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.FileSystemUtils;
+import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.lucene.store.IndexOutputOutputStream;
+import org.elasticsearch.common.lucene.uid.Versions;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.DummyTransportAddress;
-import org.elasticsearch.index.Index;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.index.engine.Engine;
+import org.elasticsearch.index.engine.SegmentsStats;
+import org.elasticsearch.index.mapper.ParseContext;
+import org.elasticsearch.index.mapper.ParsedDocument;
+import org.elasticsearch.index.mapper.SeqNoFieldMapper;
+import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.index.mapper.UidFieldMapper;
+import org.elasticsearch.index.seqno.SeqNoStats;
+import org.elasticsearch.index.seqno.SequenceNumbersService;
+import org.elasticsearch.index.shard.IndexShard;
+import org.elasticsearch.index.shard.IndexShardRelocatedException;
+import org.elasticsearch.index.shard.IndexShardState;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.store.DirectoryService;
 import org.elasticsearch.index.store.Store;
 import org.elasticsearch.index.store.StoreFileMetaData;
-import org.elasticsearch.node.settings.NodeSettingsService;
+import org.elasticsearch.index.translog.Translog;
 import org.elasticsearch.test.CorruptionUtils;
 import org.elasticsearch.test.DummyShardLock;
 import org.elasticsearch.test.ESTestCase;
@@ -53,25 +73,43 @@ import org.elasticsearch.test.IndexSettingsModule;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+
+import static java.util.Collections.emptyMap;
+import static java.util.Collections.emptySet;
+import static org.hamcrest.Matchers.equalTo;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
+import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class RecoverySourceHandlerTests extends ESTestCase {
-    private static final IndexSettings INDEX_SETTINGS = IndexSettingsModule.newIndexSettings(new Index("index"), Settings.settingsBuilder().put(IndexMetaData.SETTING_VERSION_CREATED, org.elasticsearch.Version.CURRENT).build());
+    private static final IndexSettings INDEX_SETTINGS = IndexSettingsModule.newIndexSettings("index", Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, org.elasticsearch.Version.CURRENT).build());
     private final ShardId shardId = new ShardId(INDEX_SETTINGS.getIndex(), 1);
-    private final NodeSettingsService service = new NodeSettingsService(Settings.EMPTY);
+    private final ClusterSettings service = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
 
     public void testSendFiles() throws Throwable {
         Settings settings = Settings.builder().put("indices.recovery.concurrent_streams", 1).
                 put("indices.recovery.concurrent_small_file_streams", 1).build();
         final RecoverySettings recoverySettings = new RecoverySettings(settings, service);
-        StartRecoveryRequest request = new StartRecoveryRequest(shardId,
-                new DiscoveryNode("b", DummyTransportAddress.INSTANCE, Version.CURRENT),
-                new DiscoveryNode("b", DummyTransportAddress.INSTANCE, Version.CURRENT),
-                randomBoolean(), null, RecoveryState.Type.STORE, randomLong());
+        final StartRecoveryRequest request = new StartRecoveryRequest(
+            shardId,
+            null,
+            new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+            new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+            null,
+            randomBoolean(),
+            randomNonNegativeLong(),
+            randomBoolean() ? SequenceNumbersService.UNASSIGNED_SEQ_NO : randomNonNegativeLong());
         Store store = newStore(createTempDir());
-        RecoverySourceHandler handler = new RecoverySourceHandler(null, request, recoverySettings, null, logger);
+        RecoverySourceHandler handler = new RecoverySourceHandler(null, null, request,
+            recoverySettings.getChunkSize().bytesAsInt(), Settings.EMPTY);
         Directory dir = store.directory();
         RandomIndexWriter writer = new RandomIndexWriter(random(), dir, newIndexWriterConfig());
         int numDocs = randomIntBetween(10, 100);
@@ -82,7 +120,9 @@ public class RecoverySourceHandlerTests extends ESTestCase {
             writer.addDocument(document);
         }
         writer.commit();
-        Store.MetadataSnapshot metadata = store.getMetadata();
+        writer.close();
+
+        Store.MetadataSnapshot metadata = store.getMetadata(null);
         List<StoreFileMetaData> metas = new ArrayList<>();
         for (StoreFileMetaData md : metadata) {
             metas.add(md);
@@ -94,35 +134,115 @@ public class RecoverySourceHandlerTests extends ESTestCase {
                     @Override
                     public void close() throws IOException {
                         super.close();
-                        store.directory().sync(Collections.singleton(md.name())); // sync otherwise MDW will mess with it
+                        targetStore.directory().sync(Collections.singleton(md.name())); // sync otherwise MDW will mess with it
                     }
                 };
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
         });
-        Store.MetadataSnapshot targetStoreMetadata = targetStore.getMetadata();
+        Store.MetadataSnapshot targetStoreMetadata = targetStore.getMetadata(null);
         Store.RecoveryDiff recoveryDiff = targetStoreMetadata.recoveryDiff(metadata);
         assertEquals(metas.size(), recoveryDiff.identical.size());
         assertEquals(0, recoveryDiff.different.size());
         assertEquals(0, recoveryDiff.missing.size());
         IndexReader reader = DirectoryReader.open(targetStore.directory());
         assertEquals(numDocs, reader.maxDoc());
-        IOUtils.close(reader, writer, store, targetStore, recoverySettings);
+        IOUtils.close(reader, store, targetStore);
+    }
+
+    public void testSendSnapshotSendsOps() throws IOException {
+        final RecoverySettings recoverySettings = new RecoverySettings(Settings.EMPTY, service);
+        final int fileChunkSizeInBytes = recoverySettings.getChunkSize().bytesAsInt();
+        final long startingSeqNo = randomBoolean() ? SequenceNumbersService.UNASSIGNED_SEQ_NO : randomIntBetween(0, 16);
+        final StartRecoveryRequest request = new StartRecoveryRequest(
+            shardId,
+            null,
+            new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+            new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+            null,
+            randomBoolean(),
+            randomNonNegativeLong(),
+            randomBoolean() ? SequenceNumbersService.UNASSIGNED_SEQ_NO : randomNonNegativeLong());
+        final IndexShard shard = mock(IndexShard.class);
+        when(shard.state()).thenReturn(IndexShardState.STARTED);
+        final RecoveryTargetHandler recoveryTarget = mock(RecoveryTargetHandler.class);
+        final RecoverySourceHandler handler =
+            new RecoverySourceHandler(shard, recoveryTarget, request, fileChunkSizeInBytes, Settings.EMPTY);
+        final List<Translog.Operation> operations = new ArrayList<>();
+        final int initialNumberOfDocs = randomIntBetween(16, 64);
+        for (int i = 0; i < initialNumberOfDocs; i++) {
+            final Engine.Index index = getIndex(Integer.toString(i));
+            operations.add(new Translog.Index(index, new Engine.IndexResult(1, SequenceNumbersService.UNASSIGNED_SEQ_NO, true)));
+        }
+        final int numberOfDocsWithValidSequenceNumbers = randomIntBetween(16, 64);
+        for (int i = initialNumberOfDocs; i < initialNumberOfDocs + numberOfDocsWithValidSequenceNumbers; i++) {
+            final Engine.Index index = getIndex(Integer.toString(i));
+            operations.add(new Translog.Index(index, new Engine.IndexResult(1, i - initialNumberOfDocs, true)));
+        }
+        operations.add(null);
+        RecoverySourceHandler.SendSnapshotResult result = handler.sendSnapshot(startingSeqNo, new Translog.Snapshot() {
+            @Override
+            public void close() {
+
+            }
+
+            private int counter = 0;
+
+            @Override
+            public int totalOperations() {
+                return operations.size() - 1;
+            }
+
+            @Override
+            public Translog.Operation next() throws IOException {
+                return operations.get(counter++);
+            }
+        });
+        if (startingSeqNo == SequenceNumbersService.UNASSIGNED_SEQ_NO) {
+            assertThat(result.totalOperations, equalTo(initialNumberOfDocs + numberOfDocsWithValidSequenceNumbers));
+        } else {
+            assertThat(result.totalOperations, equalTo(Math.toIntExact(numberOfDocsWithValidSequenceNumbers - startingSeqNo)));
+        }
+    }
+
+    private Engine.Index getIndex(final String id) {
+        final String type = "test";
+        final ParseContext.Document document = new ParseContext.Document();
+        document.add(new TextField("test", "test", Field.Store.YES));
+        final Field uidField = new Field("_uid", Uid.createUid(type, id), UidFieldMapper.Defaults.FIELD_TYPE);
+        final Field versionField = new NumericDocValuesField("_version", Versions.MATCH_ANY);
+        final SeqNoFieldMapper.SequenceIDFields seqID = SeqNoFieldMapper.SequenceIDFields.emptySeqID();
+        document.add(uidField);
+        document.add(versionField);
+        document.add(seqID.seqNo);
+        document.add(seqID.seqNoDocValue);
+        document.add(seqID.primaryTerm);
+        final BytesReference source = new BytesArray(new byte[] { 1 });
+        final ParsedDocument doc =
+            new ParsedDocument(versionField, seqID, id, type, null, Arrays.asList(document), source, XContentType.JSON, null);
+        return new Engine.Index(new Term("_uid", Uid.createUidAsBytes(doc.type(), doc.id())), doc);
     }
 
     public void testHandleCorruptedIndexOnSendSendFiles() throws Throwable {
         Settings settings = Settings.builder().put("indices.recovery.concurrent_streams", 1).
                 put("indices.recovery.concurrent_small_file_streams", 1).build();
         final RecoverySettings recoverySettings = new RecoverySettings(settings, service);
-        StartRecoveryRequest request = new StartRecoveryRequest(shardId,
-                new DiscoveryNode("b", DummyTransportAddress.INSTANCE, Version.CURRENT),
-                new DiscoveryNode("b", DummyTransportAddress.INSTANCE, Version.CURRENT),
-                randomBoolean(), null, RecoveryState.Type.STORE, randomLong());
+        final StartRecoveryRequest request =
+            new StartRecoveryRequest(
+                shardId,
+                null,
+                new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+                new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+                null,
+                randomBoolean(),
+                randomNonNegativeLong(),
+                randomBoolean() ? SequenceNumbersService.UNASSIGNED_SEQ_NO : 0L);
         Path tempDir = createTempDir();
         Store store = newStore(tempDir, false);
         AtomicBoolean failedEngine = new AtomicBoolean(false);
-        RecoverySourceHandler handler = new RecoverySourceHandler(null, request, recoverySettings, null, logger) {
+        RecoverySourceHandler handler = new RecoverySourceHandler(null, null, request,
+            recoverySettings.getChunkSize().bytesAsInt(), Settings.EMPTY) {
             @Override
             protected void failEngine(IOException cause) {
                 assertFalse(failedEngine.get());
@@ -141,13 +261,13 @@ public class RecoverySourceHandlerTests extends ESTestCase {
         writer.commit();
         writer.close();
 
-        Store.MetadataSnapshot metadata = store.getMetadata();
+        Store.MetadataSnapshot metadata = store.getMetadata(null);
         List<StoreFileMetaData> metas = new ArrayList<>();
         for (StoreFileMetaData md : metadata) {
             metas.add(md);
         }
 
-        CorruptionUtils.corruptFile(getRandom(), FileSystemUtils.files(tempDir, (p) ->
+        CorruptionUtils.corruptFile(random(), FileSystemUtils.files(tempDir, (p) ->
                 (p.getFileName().toString().equals("write.lock") ||
                         p.getFileName().toString().startsWith("extra")) == false));
         Store targetStore = newStore(createTempDir(), false);
@@ -170,7 +290,7 @@ public class RecoverySourceHandlerTests extends ESTestCase {
             assertNotNull(ExceptionsHelper.unwrapCorruption(ex));
         }
         assertTrue(failedEngine.get());
-        IOUtils.close(store, targetStore, recoverySettings);
+        IOUtils.close(store, targetStore);
     }
 
 
@@ -178,14 +298,21 @@ public class RecoverySourceHandlerTests extends ESTestCase {
         Settings settings = Settings.builder().put("indices.recovery.concurrent_streams", 1).
                 put("indices.recovery.concurrent_small_file_streams", 1).build();
         final RecoverySettings recoverySettings = new RecoverySettings(settings, service);
-        StartRecoveryRequest request = new StartRecoveryRequest(shardId,
-                new DiscoveryNode("b", DummyTransportAddress.INSTANCE, Version.CURRENT),
-                new DiscoveryNode("b", DummyTransportAddress.INSTANCE, Version.CURRENT),
-                randomBoolean(), null, RecoveryState.Type.STORE, randomLong());
+        final StartRecoveryRequest request =
+            new StartRecoveryRequest(
+                shardId,
+                null,
+                new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+                new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+                null,
+                randomBoolean(),
+                randomNonNegativeLong(),
+                randomBoolean() ? SequenceNumbersService.UNASSIGNED_SEQ_NO : 0L);
         Path tempDir = createTempDir();
         Store store = newStore(tempDir, false);
         AtomicBoolean failedEngine = new AtomicBoolean(false);
-        RecoverySourceHandler handler = new RecoverySourceHandler(null, request, recoverySettings, null, logger) {
+        RecoverySourceHandler handler = new RecoverySourceHandler(null, null, request,
+            recoverySettings.getChunkSize().bytesAsInt(), Settings.EMPTY) {
             @Override
             protected void failEngine(IOException cause) {
                 assertFalse(failedEngine.get());
@@ -204,7 +331,7 @@ public class RecoverySourceHandlerTests extends ESTestCase {
         writer.commit();
         writer.close();
 
-        Store.MetadataSnapshot metadata = store.getMetadata();
+        Store.MetadataSnapshot metadata = store.getMetadata(null);
         List<StoreFileMetaData> metas = new ArrayList<>();
         for (StoreFileMetaData md : metadata) {
             metas.add(md);
@@ -231,7 +358,68 @@ public class RecoverySourceHandlerTests extends ESTestCase {
             fail("not expected here");
         }
         assertFalse(failedEngine.get());
-        IOUtils.close(store, targetStore, recoverySettings);
+        IOUtils.close(store, targetStore);
+    }
+
+    public void testThrowExceptionOnPrimaryRelocatedBeforePhase1Started() throws IOException {
+        final RecoverySettings recoverySettings = new RecoverySettings(Settings.EMPTY, service);
+        final boolean attemptSequenceNumberBasedRecovery = randomBoolean();
+        final StartRecoveryRequest request =
+            new StartRecoveryRequest(
+                shardId,
+                null,
+                new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+                new DiscoveryNode("b", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT),
+                null,
+                false,
+                randomNonNegativeLong(),
+                attemptSequenceNumberBasedRecovery ? randomNonNegativeLong() : SequenceNumbersService.UNASSIGNED_SEQ_NO);
+        final IndexShard shard = mock(IndexShard.class);
+        when(shard.seqNoStats()).thenReturn(mock(SeqNoStats.class));
+        when(shard.segmentStats(anyBoolean())).thenReturn(mock(SegmentsStats.class));
+        when(shard.state()).thenReturn(IndexShardState.RELOCATED);
+        when(shard.acquireIndexCommit(anyBoolean())).thenReturn(mock(Engine.IndexCommitRef.class));
+        doAnswer(invocation -> {
+            ((ActionListener<Releasable>)invocation.getArguments()[0]).onResponse(() -> {});
+            return null;
+        }).when(shard).acquirePrimaryOperationPermit(any(), anyString());
+        final AtomicBoolean phase1Called = new AtomicBoolean();
+        final AtomicBoolean prepareTargetForTranslogCalled = new AtomicBoolean();
+        final AtomicBoolean phase2Called = new AtomicBoolean();
+        final RecoverySourceHandler handler = new RecoverySourceHandler(
+            shard,
+            mock(RecoveryTargetHandler.class),
+            request,
+            recoverySettings.getChunkSize().bytesAsInt(),
+            Settings.EMPTY) {
+
+
+            @Override
+            boolean isTranslogReadyForSequenceNumberBasedRecovery() throws IOException {
+                return randomBoolean();
+            }
+
+            @Override
+            public void phase1(final IndexCommit snapshot, final Supplier<Integer> translogOps) {
+                phase1Called.set(true);
+            }
+
+            @Override
+            void prepareTargetForTranslog(final int totalTranslogOps) throws IOException {
+                prepareTargetForTranslogCalled.set(true);
+            }
+
+            @Override
+            long phase2(long startingSeqNo, Translog.Snapshot snapshot) throws IOException {
+                phase2Called.set(true);
+                return SequenceNumbersService.UNASSIGNED_SEQ_NO;
+            }
+
+        };
+        expectThrows(IndexShardRelocatedException.class, handler::recoverToTarget);
+        assertFalse(phase1Called.get());
+        assertFalse(prepareTargetForTranslogCalled.get());
+        assertFalse(phase2Called.get());
     }
 
     private Store newStore(Path path) throws IOException {
@@ -239,10 +427,6 @@ public class RecoverySourceHandlerTests extends ESTestCase {
     }
     private Store newStore(Path path, boolean checkIndex) throws IOException {
         DirectoryService directoryService = new DirectoryService(shardId, INDEX_SETTINGS) {
-            @Override
-            public long throttleTimeInNanos() {
-                return 0;
-            }
 
             @Override
             public Directory newDirectory() throws IOException {

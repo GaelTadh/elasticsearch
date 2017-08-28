@@ -32,7 +32,6 @@ import org.elasticsearch.common.inject.spi.Message;
 import org.elasticsearch.common.inject.spi.TypeListenerBinding;
 
 import java.io.PrintWriter;
-import java.io.Serializable;
 import java.io.StringWriter;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
@@ -60,13 +59,13 @@ import static java.util.Collections.unmodifiableList;
  * returned instance will contain full context.
  * <p>
  * To avoid messages with redundant context, {@link #withSource} should be added sparingly. A
- * good rule of thumb is to assume a ethod's caller has already specified enough context to
+ * good rule of thumb is to assume a method's caller has already specified enough context to
  * identify that method. When calling a method that's defined in a different context, call that
  * method with an errors object that includes its context.
  *
  * @author jessewilson@google.com (Jesse Wilson)
  */
-public final class Errors implements Serializable {
+public final class Errors {
 
     /**
      * The root errors object. Used to access the list of error messages.
@@ -552,7 +551,7 @@ public final class Errors implements Serializable {
         return root.errors == null ? 0 : root.errors.size();
     }
 
-    private static abstract class Converter<T> {
+    private abstract static class Converter<T> {
 
         final Class<T> type;
 

@@ -16,15 +16,14 @@
 
 package org.elasticsearch.common.inject.name;
 
-import java.io.Serializable;
 import java.lang.annotation.Annotation;
 import java.util.Objects;
 
-class NamedImpl implements Named, Serializable {
+class NamedImpl implements Named {
 
     private final String value;
 
-    public NamedImpl(String value) {
+    NamedImpl(String value) {
         this.value = Objects.requireNonNull(value, "name");
     }
 
@@ -58,6 +57,4 @@ class NamedImpl implements Named, Serializable {
     public Class<? extends Annotation> annotationType() {
         return Named.class;
     }
-
-    private static final long serialVersionUID = 0;
 }

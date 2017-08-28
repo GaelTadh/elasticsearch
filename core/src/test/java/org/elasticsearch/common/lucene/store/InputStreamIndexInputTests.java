@@ -30,9 +30,6 @@ import java.io.IOException;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.lessThan;
 
-/**
- *
- */
 public class InputStreamIndexInputTests extends ESTestCase {
     public void testSingleReadSingleByteLimit() throws IOException {
         RAMDirectory dir = new RAMDirectory();
@@ -51,7 +48,7 @@ public class InputStreamIndexInputTests extends ESTestCase {
         for (int i = 0; i < 3; i++) {
             InputStreamIndexInput is = new InputStreamIndexInput(input, 1);
             assertThat(input.getFilePointer(), lessThan(input.length()));
-            assertThat(is.actualSizeToRead(), equalTo(1l));
+            assertThat(is.actualSizeToRead(), equalTo(1L));
             assertThat(is.read(), equalTo(1));
             assertThat(is.read(), equalTo(-1));
         }
@@ -59,14 +56,14 @@ public class InputStreamIndexInputTests extends ESTestCase {
         for (int i = 0; i < 3; i++) {
             InputStreamIndexInput is = new InputStreamIndexInput(input, 1);
             assertThat(input.getFilePointer(), lessThan(input.length()));
-            assertThat(is.actualSizeToRead(), equalTo(1l));
+            assertThat(is.actualSizeToRead(), equalTo(1L));
             assertThat(is.read(), equalTo(2));
             assertThat(is.read(), equalTo(-1));
         }
 
         assertThat(input.getFilePointer(), equalTo(input.length()));
         InputStreamIndexInput is = new InputStreamIndexInput(input, 1);
-        assertThat(is.actualSizeToRead(), equalTo(0l));
+        assertThat(is.actualSizeToRead(), equalTo(0L));
         assertThat(is.read(), equalTo(-1));
     }
 
@@ -89,7 +86,7 @@ public class InputStreamIndexInputTests extends ESTestCase {
         for (int i = 0; i < 3; i++) {
             assertThat(input.getFilePointer(), lessThan(input.length()));
             InputStreamIndexInput is = new InputStreamIndexInput(input, 1);
-            assertThat(is.actualSizeToRead(), equalTo(1l));
+            assertThat(is.actualSizeToRead(), equalTo(1L));
             assertThat(is.read(read), equalTo(1));
             assertThat(read[0], equalTo((byte) 1));
         }
@@ -97,14 +94,14 @@ public class InputStreamIndexInputTests extends ESTestCase {
         for (int i = 0; i < 3; i++) {
             assertThat(input.getFilePointer(), lessThan(input.length()));
             InputStreamIndexInput is = new InputStreamIndexInput(input, 1);
-            assertThat(is.actualSizeToRead(), equalTo(1l));
+            assertThat(is.actualSizeToRead(), equalTo(1L));
             assertThat(is.read(read), equalTo(1));
             assertThat(read[0], equalTo((byte) 2));
         }
 
         assertThat(input.getFilePointer(), equalTo(input.length()));
         InputStreamIndexInput is = new InputStreamIndexInput(input, 1);
-        assertThat(is.actualSizeToRead(), equalTo(0l));
+        assertThat(is.actualSizeToRead(), equalTo(0L));
         assertThat(is.read(read), equalTo(-1));
     }
 
@@ -124,28 +121,28 @@ public class InputStreamIndexInputTests extends ESTestCase {
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         InputStreamIndexInput is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(), equalTo(1));
         assertThat(is.read(), equalTo(1));
         assertThat(is.read(), equalTo(-1));
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(), equalTo(1));
         assertThat(is.read(), equalTo(2));
         assertThat(is.read(), equalTo(-1));
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(), equalTo(2));
         assertThat(is.read(), equalTo(2));
         assertThat(is.read(), equalTo(-1));
 
         assertThat(input.getFilePointer(), equalTo(input.length()));
         is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(0l));
+        assertThat(is.actualSizeToRead(), equalTo(0L));
         assertThat(is.read(), equalTo(-1));
     }
 
@@ -167,28 +164,28 @@ public class InputStreamIndexInputTests extends ESTestCase {
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         InputStreamIndexInput is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(read), equalTo(2));
         assertThat(read[0], equalTo((byte) 1));
         assertThat(read[1], equalTo((byte) 1));
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(read), equalTo(2));
         assertThat(read[0], equalTo((byte) 1));
         assertThat(read[1], equalTo((byte) 2));
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(read), equalTo(2));
         assertThat(read[0], equalTo((byte) 2));
         assertThat(read[1], equalTo((byte) 2));
 
         assertThat(input.getFilePointer(), equalTo(input.length()));
         is = new InputStreamIndexInput(input, 2);
-        assertThat(is.actualSizeToRead(), equalTo(0l));
+        assertThat(is.actualSizeToRead(), equalTo(0L));
         assertThat(is.read(read), equalTo(-1));
     }
 
@@ -210,7 +207,7 @@ public class InputStreamIndexInputTests extends ESTestCase {
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         InputStreamIndexInput is = new InputStreamIndexInput(input, 4);
-        assertThat(is.actualSizeToRead(), equalTo(4l));
+        assertThat(is.actualSizeToRead(), equalTo(4L));
         assertThat(is.read(read), equalTo(4));
         assertThat(read[0], equalTo((byte) 1));
         assertThat(read[1], equalTo((byte) 1));
@@ -219,14 +216,14 @@ public class InputStreamIndexInputTests extends ESTestCase {
 
         assertThat(input.getFilePointer(), lessThan(input.length()));
         is = new InputStreamIndexInput(input, 4);
-        assertThat(is.actualSizeToRead(), equalTo(2l));
+        assertThat(is.actualSizeToRead(), equalTo(2L));
         assertThat(is.read(read), equalTo(2));
         assertThat(read[0], equalTo((byte) 2));
         assertThat(read[1], equalTo((byte) 2));
 
         assertThat(input.getFilePointer(), equalTo(input.length()));
         is = new InputStreamIndexInput(input, 4);
-        assertThat(is.actualSizeToRead(), equalTo(0l));
+        assertThat(is.actualSizeToRead(), equalTo(0L));
         assertThat(is.read(read), equalTo(-1));
     }
 

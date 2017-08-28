@@ -21,8 +21,10 @@ package org.apache.lucene.queries;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.index.RandomIndexWriter;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryUtils;
 import org.apache.lucene.store.Directory;
 import org.elasticsearch.test.ESTestCase;
@@ -38,13 +40,26 @@ public class MinDocQueryTests extends ESTestCase {
         QueryUtils.check(query1);
         QueryUtils.checkEqual(query1, query2);
         QueryUtils.checkUnequal(query1, query3);
+
+        MinDocQuery query4 = new MinDocQuery(42, new Object());
+        MinDocQuery query5 = new MinDocQuery(42, new Object());
+        QueryUtils.checkUnequal(query4, query5);
+    }
+
+    public void testRewrite() throws Exception {
+        IndexReader reader = new MultiReader();
+        MinDocQuery query = new MinDocQuery(42);
+        Query rewritten = query.rewrite(reader);
+        QueryUtils.checkUnequal(query, rewritten);
+        Query rewritten2 = rewritten.rewrite(reader);
+        assertSame(rewritten, rewritten2);
     }
 
     public void testRandom() throws IOException {
         final int numDocs = randomIntBetween(10, 200);
         final Document doc = new Document();
         final Directory dir = newDirectory();
-        final RandomIndexWriter w = new RandomIndexWriter(getRandom(), dir);
+        final RandomIndexWriter w = new RandomIndexWriter(random(), dir);
         for (int i = 0; i < numDocs; ++i) {
             w.addDocument(doc);
         }

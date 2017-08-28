@@ -18,7 +18,8 @@
  */
 package org.elasticsearch.common.lucene.index;
 
-import org.apache.lucene.index.*;
+import org.apache.lucene.index.FilterLeafReader;
+import org.apache.lucene.index.LeafReader;
 import org.elasticsearch.index.shard.ShardId;
 
 /**
@@ -48,8 +49,13 @@ public final class ElasticsearchLeafReader extends FilterLeafReader {
     }
 
     @Override
-    public Object getCoreCacheKey() {
-        return in.getCoreCacheKey();
+    public CacheHelper getCoreCacheHelper() {
+        return in.getCoreCacheHelper();
+    }
+
+    @Override
+    public CacheHelper getReaderCacheHelper() {
+        return in.getReaderCacheHelper();
     }
 
     public static ElasticsearchLeafReader getElasticsearchLeafReader(LeafReader reader) {

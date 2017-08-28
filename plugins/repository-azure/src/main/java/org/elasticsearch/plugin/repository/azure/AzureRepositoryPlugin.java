@@ -19,49 +19,59 @@
 
 package org.elasticsearch.plugin.repository.azure;
 
-import org.elasticsearch.cloud.azure.AzureRepositoryModule;
-import org.elasticsearch.common.inject.Module;
-import org.elasticsearch.common.logging.ESLogger;
-import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.cloud.azure.storage.AzureStorageService;
+import org.elasticsearch.cloud.azure.storage.AzureStorageServiceImpl;
+import org.elasticsearch.cloud.azure.storage.AzureStorageSettings;
+import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.index.snapshots.blobstore.BlobStoreIndexShardRepository;
+import org.elasticsearch.common.xcontent.NamedXContentRegistry;
+import org.elasticsearch.env.Environment;
 import org.elasticsearch.plugins.Plugin;
-import org.elasticsearch.repositories.RepositoriesModule;
+import org.elasticsearch.plugins.RepositoryPlugin;
+import org.elasticsearch.repositories.Repository;
 import org.elasticsearch.repositories.azure.AzureRepository;
 
-import java.util.Collection;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 /**
- *
+ * A plugin to add a repository type that writes to and from the Azure cloud storage service.
  */
-public class AzureRepositoryPlugin extends Plugin {
+public class AzureRepositoryPlugin extends Plugin implements RepositoryPlugin {
 
-    private final Settings settings;
-    protected final ESLogger logger = Loggers.getLogger(AzureRepositoryPlugin.class);
+    private final Map<String, AzureStorageSettings> clientsSettings;
+
+    // overridable for tests
+    protected AzureStorageService createStorageService(Settings settings) {
+        return new AzureStorageServiceImpl(settings, clientsSettings);
+    }
 
     public AzureRepositoryPlugin(Settings settings) {
-        this.settings = settings;
-        logger.trace("starting azure repository plugin...");
+        // eagerly load client settings so that secure settings are read
+        clientsSettings = AzureStorageSettings.load(settings);
     }
 
     @Override
-    public String name() {
-        return "repository-azure";
+    public Map<String, Repository.Factory> getRepositories(Environment env, NamedXContentRegistry namedXContentRegistry) {
+        return Collections.singletonMap(AzureRepository.TYPE,
+            (metadata) -> new AzureRepository(metadata, env, namedXContentRegistry, createStorageService(env.settings())));
     }
 
     @Override
-    public String description() {
-        return "Azure Repository Plugin";
+    public List<Setting<?>> getSettings() {
+        return Arrays.asList(
+            AzureStorageService.Storage.STORAGE_ACCOUNTS,
+            AzureStorageSettings.ACCOUNT_SETTING,
+            AzureStorageSettings.KEY_SETTING,
+            AzureStorageSettings.TIMEOUT_SETTING
+        );
     }
 
     @Override
-    public Collection<Module> nodeModules() {
-        return Collections.singletonList((Module) new AzureRepositoryModule(settings));
-    }
-
-    public void onModule(RepositoriesModule module) {
-        logger.debug("registering repository type [{}]", AzureRepository.TYPE);
-        module.registerRepository(AzureRepository.TYPE, AzureRepository.class, BlobStoreIndexShardRepository.class);
+    public List<String> getSettingsFilter() {
+        // Cloud storage API settings using a pattern needed to be hidden
+        return Arrays.asList(AzureStorageService.Storage.PREFIX + "*.account", AzureStorageService.Storage.PREFIX + "*.key");
     }
 }

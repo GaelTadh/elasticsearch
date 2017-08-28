@@ -64,8 +64,8 @@ public class DoubleValuesComparatorSource extends IndexFieldData.XFieldComparato
     protected void setScorer(Scorer scorer) {}
 
     @Override
-    public FieldComparator<?> newComparator(String fieldname, int numHits, int sortPos, boolean reversed) throws IOException {
-        assert indexFieldData == null || fieldname.equals(indexFieldData.getFieldNames().indexName());
+    public FieldComparator<?> newComparator(String fieldname, int numHits, int sortPos, boolean reversed) {
+        assert indexFieldData == null || fieldname.equals(indexFieldData.getFieldName());
 
         final double dMissingValue = (Double) missingObject(missingValue, reversed);
         // NOTE: it's important to pass null as a missing value in the constructor so that

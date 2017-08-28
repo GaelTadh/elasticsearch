@@ -37,7 +37,7 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.BM25Similarity;
-import org.apache.lucene.search.similarities.DefaultSimilarity;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.TestUtil;
@@ -53,62 +53,7 @@ import java.util.Set;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 
-/**
- */
 public class BlendedTermQueryTests extends ESTestCase {
-    public void testBooleanQuery() throws IOException {
-        Directory dir = newDirectory();
-        IndexWriter w = new IndexWriter(dir, newIndexWriterConfig(new MockAnalyzer(random())));
-        String[] firstNames = new String[]{
-                "simon", "paul"
-        };
-        String[] surNames = new String[]{
-                "willnauer", "simon"
-        };
-        for (int i = 0; i < surNames.length; i++) {
-            Document d = new Document();
-            d.add(new TextField("id", Integer.toString(i), Field.Store.YES));
-            d.add(new TextField("firstname", firstNames[i], Field.Store.NO));
-            d.add(new TextField("surname", surNames[i], Field.Store.NO));
-            w.addDocument(d);
-        }
-        int iters = scaledRandomIntBetween(25, 100);
-        for (int j = 0; j < iters; j++) {
-            Document d = new Document();
-            d.add(new TextField("id", Integer.toString(firstNames.length + j), Field.Store.YES));
-            d.add(new TextField("firstname", rarely() ? "some_other_name" :
-                    "simon the sorcerer", Field.Store.NO)); // make sure length-norm is the tie-breaker
-            d.add(new TextField("surname", "bogus", Field.Store.NO));
-            w.addDocument(d);
-        }
-        w.commit();
-        DirectoryReader reader = DirectoryReader.open(w, true);
-        IndexSearcher searcher = setSimilarity(newSearcher(reader));
-
-        {
-            Term[] terms = new Term[]{new Term("firstname", "simon"), new Term("surname", "simon")};
-            BlendedTermQuery query = BlendedTermQuery.booleanBlendedQuery(terms, true);
-            TopDocs search = searcher.search(query, 3);
-            ScoreDoc[] scoreDocs = search.scoreDocs;
-            assertEquals(3, scoreDocs.length);
-            assertEquals(Integer.toString(0), reader.document(scoreDocs[0].doc).getField("id").stringValue());
-        }
-        {
-            BooleanQuery.Builder query = new BooleanQuery.Builder();
-            query.setDisableCoord(true);
-            query.add(new TermQuery(new Term("firstname", "simon")), BooleanClause.Occur.SHOULD);
-            query.add(new TermQuery(new Term("surname", "simon")), BooleanClause.Occur.SHOULD);
-            TopDocs search = searcher.search(query.build(), 1);
-            ScoreDoc[] scoreDocs = search.scoreDocs;
-            assertEquals(Integer.toString(1), reader.document(scoreDocs[0].doc).getField("id").stringValue());
-
-        }
-        reader.close();
-        w.close();
-        dir.close();
-
-    }
-
     public void testDismaxQuery() throws IOException {
         Directory dir = newDirectory();
         IndexWriter w = new IndexWriter(dir, newIndexWriterConfig(new MockAnalyzer(random())));
@@ -143,12 +88,11 @@ public class BlendedTermQueryTests extends ESTestCase {
             w.addDocument(d);
         }
         w.commit();
-        DirectoryReader reader = DirectoryReader.open(w, true);
+        DirectoryReader reader = DirectoryReader.open(w);
         IndexSearcher searcher = setSimilarity(newSearcher(reader));
         {
             String[] fields = new String[]{"username", "song"};
             BooleanQuery.Builder query = new BooleanQuery.Builder();
-            query.setDisableCoord(true);
             query.add(BlendedTermQuery.dismaxBlendedQuery(toTerms(fields, "foo"), 0.1f), BooleanClause.Occur.SHOULD);
             query.add(BlendedTermQuery.dismaxBlendedQuery(toTerms(fields, "fighters"), 0.1f), BooleanClause.Occur.SHOULD);
             query.add(BlendedTermQuery.dismaxBlendedQuery(toTerms(fields, "generator"), 0.1f), BooleanClause.Occur.SHOULD);
@@ -158,17 +102,13 @@ public class BlendedTermQueryTests extends ESTestCase {
         }
         {
             BooleanQuery.Builder query = new BooleanQuery.Builder();
-            query.setDisableCoord(true);
-            DisjunctionMaxQuery uname = new DisjunctionMaxQuery(0.0f);
-            uname.add(new TermQuery(new Term("username", "foo")));
-            uname.add(new TermQuery(new Term("song", "foo")));
+            DisjunctionMaxQuery uname = new DisjunctionMaxQuery(
+                    Arrays.asList(new TermQuery(new Term("username", "foo")), new TermQuery(new Term("song", "foo"))), 0.0f);
 
-            DisjunctionMaxQuery s = new DisjunctionMaxQuery(0.0f);
-            s.add(new TermQuery(new Term("username", "fighers")));
-            s.add(new TermQuery(new Term("song", "fighers")));
-            DisjunctionMaxQuery gen = new DisjunctionMaxQuery(0f);
-            gen.add(new TermQuery(new Term("username", "generator")));
-            gen.add(new TermQuery(new Term("song", "generator")));
+            DisjunctionMaxQuery s = new DisjunctionMaxQuery(
+                    Arrays.asList(new TermQuery(new Term("username", "fighers")), new TermQuery(new Term("song", "fighers"))), 0.0f);
+            DisjunctionMaxQuery gen = new DisjunctionMaxQuery(
+                    Arrays.asList(new TermQuery(new Term("username", "generator")), new TermQuery(new Term("song", "generator"))), 0f);
             query.add(uname, BooleanClause.Occur.SHOULD);
             query.add(s, BooleanClause.Occur.SHOULD);
             query.add(gen, BooleanClause.Occur.SHOULD);
@@ -191,13 +131,11 @@ public class BlendedTermQueryTests extends ESTestCase {
             }
             String term = TestUtil.randomRealisticUnicodeString(random(), 1, 10);
             Term[] terms = toTerms(fields, term);
-            boolean disableCoord = random().nextBoolean();
-            boolean useBoolean = random().nextBoolean();
             float tieBreaker = random().nextFloat();
-            BlendedTermQuery query = useBoolean ? BlendedTermQuery.booleanBlendedQuery(terms, disableCoord) : BlendedTermQuery.dismaxBlendedQuery(terms, tieBreaker);
+            BlendedTermQuery query = BlendedTermQuery.dismaxBlendedQuery(terms, tieBreaker);
             QueryUtils.check(query);
             terms = toTerms(fields, term);
-            BlendedTermQuery query2 = useBoolean ? BlendedTermQuery.booleanBlendedQuery(terms, disableCoord) : BlendedTermQuery.dismaxBlendedQuery(terms, tieBreaker);
+            BlendedTermQuery query2 = BlendedTermQuery.dismaxBlendedQuery(terms, tieBreaker);
             assertEquals(query, query2);
         }
     }
@@ -214,7 +152,7 @@ public class BlendedTermQueryTests extends ESTestCase {
     }
 
     public IndexSearcher setSimilarity(IndexSearcher searcher) {
-        Similarity similarity = random().nextBoolean() ? new BM25Similarity() : new DefaultSimilarity();
+        Similarity similarity = random().nextBoolean() ? new BM25Similarity() : new ClassicSimilarity();
         searcher.setSimilarity(similarity);
         return searcher;
     }
@@ -226,8 +164,7 @@ public class BlendedTermQueryTests extends ESTestCase {
             terms.add(new Term(TestUtil.randomRealisticUnicodeString(random(), 1, 10), TestUtil.randomRealisticUnicodeString(random(), 1, 10)));
         }
 
-        BlendedTermQuery blendedTermQuery = random().nextBoolean() ? BlendedTermQuery.dismaxBlendedQuery(terms.toArray(new Term[0]), random().nextFloat()) :
-                BlendedTermQuery.booleanBlendedQuery(terms.toArray(new Term[0]), random().nextBoolean());
+        BlendedTermQuery blendedTermQuery = BlendedTermQuery.dismaxBlendedQuery(terms.toArray(new Term[0]), random().nextFloat());
         Set<Term> extracted = new HashSet<>();
         IndexSearcher searcher = new IndexSearcher(new MultiReader());
         searcher.createNormalizedWeight(blendedTermQuery, false).extractTerms(extracted);

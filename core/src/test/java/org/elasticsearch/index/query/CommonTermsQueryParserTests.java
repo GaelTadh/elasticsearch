@@ -32,7 +32,7 @@ public class CommonTermsQueryParserTests extends ESSingleNodeTestCase {
                 .admin()
                 .indices()
                 .prepareCreate(index)
-                .addMapping(type, "name", "type=string,analyzer=stop")
+                .addMapping(type, "name", "type=text,analyzer=stop")
                 .execute()
                 .actionGet();
         ensureGreen();
@@ -45,6 +45,6 @@ public class CommonTermsQueryParserTests extends ESSingleNodeTestCase {
                 client().prepareSearch(index).setTypes(type).setQuery(commonTermsQueryBuilder).execute().actionGet();
 
         assertNotNull(response);
-        assertEquals(response.getHits().hits().length, 0);
+        assertEquals(response.getHits().getHits().length, 0);
     }
 }

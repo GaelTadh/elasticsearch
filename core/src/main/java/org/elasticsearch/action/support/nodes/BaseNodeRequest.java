@@ -25,9 +25,6 @@ import org.elasticsearch.transport.TransportRequest;
 
 import java.io.IOException;
 
-/**
- *
- */
 public abstract class BaseNodeRequest extends TransportRequest {
 
     private String nodeId;
@@ -36,8 +33,7 @@ public abstract class BaseNodeRequest extends TransportRequest {
 
     }
 
-    protected BaseNodeRequest(BaseNodesRequest request, String nodeId) {
-        super(request);
+    protected BaseNodeRequest(String nodeId) {
         this.nodeId = nodeId;
     }
 

@@ -23,6 +23,8 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexService;
+import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 
 /**
  * An index event listener is the primary extension point for plugins and build-in services
@@ -70,7 +72,6 @@ public interface IndexEventListener {
      */
     default void afterIndexShardClosed(ShardId shardId, @Nullable IndexShard indexShard, Settings indexSettings) {}
 
-
     /**
      * Called after a shard's {@link org.elasticsearch.index.shard.IndexShardState} changes.
      * The order of concurrent events is preserved. The execution must be lightweight.
@@ -90,13 +91,6 @@ public interface IndexEventListener {
     default void onShardInactive(IndexShard indexShard) {}
 
     /**
-     * Called when a shard is marked as active ie. was previously inactive and is now active again.
-     *
-     * @param indexShard The shard that was marked active
-     */
-    default void onShardActive(IndexShard indexShard) {}
-
-    /**
      * Called before the index gets created. Note that this is also called
      * when the index is created on data nodes
      */
@@ -112,28 +106,29 @@ public interface IndexEventListener {
     }
 
     /**
-     * Called before the index shard gets created.
-     */
-    default void beforeIndexShardCreated(ShardId shardId, Settings indexSettings) {
-    }
-
-
-    /**
      * Called before the index get closed.
      *
      * @param indexService The index service
+     * @param reason       the reason for index removal
      */
-    default void beforeIndexClosed(IndexService indexService) {
+    default void beforeIndexRemoved(IndexService indexService, IndexRemovalReason reason) {
 
     }
 
     /**
-     * Called after the index has been closed.
+     * Called after the index has been removed.
      *
      * @param index The index
+     * @param reason       the reason for index removal
      */
-    default void afterIndexClosed(Index index, Settings indexSettings) {
+    default void afterIndexRemoved(Index index, IndexSettings indexSettings, IndexRemovalReason reason) {
 
+    }
+
+    /**
+     * Called before the index shard gets created.
+     */
+    default void beforeIndexShardCreated(ShardId shardId, Settings indexSettings) {
     }
 
     /**
@@ -158,31 +153,17 @@ public interface IndexEventListener {
     }
 
     /**
-     * Called after the index has been deleted.
-     * This listener method is invoked after {@link #afterIndexClosed(org.elasticsearch.index.Index, org.elasticsearch.common.settings.Settings)}
-     * when an index is deleted
-     *
-     * @param index The index
-     */
-    default void afterIndexDeleted(Index index, Settings indexSettings) {
-
-    }
-
-    /**
-     * Called before the index gets deleted.
-     * This listener method is invoked after
-     * {@link #beforeIndexClosed(org.elasticsearch.index.IndexService)} when an index is deleted
-     *
-     * @param indexService The index service
-     */
-    default void beforeIndexDeleted(IndexService indexService) {
-
-    }
-
-    /**
      * Called on the Master node only before the {@link IndexService} instances is created to simulate an index creation.
      * This happens right before the index and it's metadata is registered in the cluster state
      */
     default void beforeIndexAddedToCluster(Index index, Settings indexSettings) {
     }
+
+    /**
+     * Called when the given shards store is closed. The store is closed once all resource have been released on the store.
+     * This implies that all index readers are closed and no recoveries are running.
+     *
+     * @param shardId the shard ID the store belongs to
+     */
+    default void onStoreClosed(ShardId shardId) {}
 }

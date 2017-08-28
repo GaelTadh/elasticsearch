@@ -20,7 +20,6 @@
 package org.elasticsearch.common.util;
 
 
-import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.lease.Releasables;
 
 import java.util.Iterator;
@@ -162,7 +161,7 @@ public class LongObjectPagedHashMap<T> extends AbstractPagedHashMap implements I
             }
 
             @Override
-            public final void remove() {
+            public void remove() {
                 throw new UnsupportedOperationException();
             }
 

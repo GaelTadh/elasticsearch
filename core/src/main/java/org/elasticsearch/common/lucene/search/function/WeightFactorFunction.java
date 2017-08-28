@@ -25,9 +25,6 @@ import org.apache.lucene.search.Explanation;
 import java.io.IOException;
 import java.util.Objects;
 
-/**
- *
- */
 public class WeightFactorFunction extends ScoreFunction {
 
     private static final ScoreFunction SCORE_ONE = new ScoreOne(CombineFunction.MULTIPLY);
@@ -55,7 +52,7 @@ public class WeightFactorFunction extends ScoreFunction {
         final LeafScoreFunction leafFunction = scoreFunction.getLeafScoreFunction(ctx);
         return new LeafScoreFunction() {
             @Override
-            public double score(int docId, float subQueryScore) {
+            public double score(int docId, float subQueryScore) throws IOException {
                 return leafFunction.score(docId, subQueryScore) * getWeight();
             }
 
@@ -71,13 +68,14 @@ public class WeightFactorFunction extends ScoreFunction {
 
     @Override
     public boolean needsScores() {
-        return false;
+        return scoreFunction.needsScores();
     }
 
     public Explanation explainWeight() {
         return Explanation.match(getWeight(), "weight");
     }
 
+    @Override
     public float getWeight() {
         return weight;
     }
@@ -91,6 +89,11 @@ public class WeightFactorFunction extends ScoreFunction {
         WeightFactorFunction weightFactorFunction = (WeightFactorFunction) other;
         return this.weight == weightFactorFunction.weight &&
                 Objects.equals(this.scoreFunction, weightFactorFunction.scoreFunction);
+    }
+
+    @Override
+    protected int doHashCode() {
+        return Objects.hash(weight, scoreFunction);
     }
 
     private static class ScoreOne extends ScoreFunction {
@@ -122,6 +125,11 @@ public class WeightFactorFunction extends ScoreFunction {
         @Override
         protected boolean doEquals(ScoreFunction other) {
             return true;
+        }
+
+        @Override
+        protected int doHashCode() {
+            return 0;
         }
     }
 }

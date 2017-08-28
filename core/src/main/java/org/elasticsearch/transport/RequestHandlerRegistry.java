@@ -19,48 +19,110 @@
 
 package org.elasticsearch.transport;
 
+import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.tasks.Task;
+import org.elasticsearch.tasks.TaskManager;
 
-import java.lang.reflect.Constructor;
-import java.util.concurrent.Callable;
+import java.io.IOException;
 import java.util.function.Supplier;
 
-/**
- *
- */
 public class RequestHandlerRegistry<Request extends TransportRequest> {
 
     private final String action;
     private final TransportRequestHandler<Request> handler;
     private final boolean forceExecution;
+    private final boolean canTripCircuitBreaker;
     private final String executor;
-    private final Supplier<Request> requestFactory;
+    private final TaskManager taskManager;
+    private final Writeable.Reader<Request> requestReader;
 
-    public RequestHandlerRegistry(String action, Supplier<Request> requestFactory, TransportRequestHandler<Request> handler, String executor, boolean forceExecution) {
+    public RequestHandlerRegistry(String action, Writeable.Reader<Request> requestReader, TaskManager taskManager,
+                                  TransportRequestHandler<Request> handler, String executor, boolean forceExecution,
+                                  boolean canTripCircuitBreaker) {
         this.action = action;
-        this.requestFactory = requestFactory;
-        assert newRequest() != null;
+        this.requestReader = requestReader;
         this.handler = handler;
         this.forceExecution = forceExecution;
+        this.canTripCircuitBreaker = canTripCircuitBreaker;
         this.executor = executor;
+        this.taskManager = taskManager;
     }
 
     public String getAction() {
         return action;
     }
 
-    public Request newRequest() {
-            return requestFactory.get();
+    public Request newRequest(StreamInput in) throws IOException {
+        return requestReader.read(in);
     }
 
-    public TransportRequestHandler<Request> getHandler() {
-        return handler;
+    public void processMessageReceived(Request request, TransportChannel channel) throws Exception {
+        final Task task = taskManager.register(channel.getChannelType(), action, request);
+        if (task == null) {
+            handler.messageReceived(request, channel);
+        } else {
+            boolean success = false;
+            try {
+                handler.messageReceived(request, new TransportChannelWrapper(taskManager, task, channel), task);
+                success = true;
+            } finally {
+                if (success == false) {
+                    taskManager.unregister(task);
+                }
+            }
+        }
     }
 
     public boolean isForceExecution() {
         return forceExecution;
     }
 
+    public boolean canTripCircuitBreaker() {
+        return canTripCircuitBreaker;
+    }
+
     public String getExecutor() {
         return executor;
+    }
+
+    @Override
+    public String toString() {
+        return handler.toString();
+    }
+
+    private static class TransportChannelWrapper extends DelegatingTransportChannel {
+
+        private final Task task;
+
+        private final TaskManager taskManager;
+
+        TransportChannelWrapper(TaskManager taskManager, Task task, TransportChannel channel) {
+            super(channel);
+            this.task = task;
+            this.taskManager = taskManager;
+        }
+
+        @Override
+        public void sendResponse(TransportResponse response) throws IOException {
+            endTask();
+            super.sendResponse(response);
+        }
+
+        @Override
+        public void sendResponse(TransportResponse response, TransportResponseOptions options) throws IOException {
+            endTask();
+            super.sendResponse(response, options);
+        }
+
+        @Override
+        public void sendResponse(Exception exception) throws IOException {
+            endTask();
+            super.sendResponse(exception);
+        }
+
+        private void endTask() {
+            taskManager.unregister(task);
+        }
     }
 }

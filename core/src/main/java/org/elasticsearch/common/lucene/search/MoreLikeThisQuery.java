@@ -22,11 +22,15 @@ package org.elasticsearch.common.lucene.search;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
-import org.apache.lucene.index.*;
+import org.apache.lucene.index.Fields;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.similarities.DefaultSimilarity;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.search.similarities.TFIDFSimilarity;
 import org.apache.lucene.util.BytesRef;
@@ -35,11 +39,12 @@ import org.elasticsearch.common.io.FastStringReader;
 
 import java.io.IOException;
 import java.io.Reader;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
-/**
- *
- */
 public class MoreLikeThisQuery extends Query {
 
     public static final String DEFAULT_MINIMUM_SHOULD_MATCH = "30%";
@@ -76,14 +81,14 @@ public class MoreLikeThisQuery extends Query {
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), boostTerms, boostTermsFactor, Arrays.hashCode(likeText),
+        return Objects.hash(classHash(), boostTerms, boostTermsFactor, Arrays.hashCode(likeText),
                 maxDocFreq, maxQueryTerms, maxWordLen, minDocFreq, minTermFrequency, minWordLen,
                 Arrays.hashCode(moreLikeFields), minimumShouldMatch, stopWords);
     }
 
     @Override
     public boolean equals(Object obj) {
-        if (super.equals(obj) == false) {
+        if (sameClassAs(obj) == false) {
             return false;
         }
         MoreLikeThisQuery other = (MoreLikeThisQuery) obj;
@@ -130,7 +135,7 @@ public class MoreLikeThisQuery extends Query {
         if (rewritten != this) {
             return rewritten;
         }
-        XMoreLikeThis mlt = new XMoreLikeThis(reader, similarity == null ? new DefaultSimilarity() : similarity);
+        XMoreLikeThis mlt = new XMoreLikeThis(reader, similarity == null ? new ClassicSimilarity() : similarity);
 
         mlt.setFieldNames(moreLikeFields);
         mlt.setAnalyzer(analyzer);
@@ -219,10 +224,6 @@ public class MoreLikeThisQuery extends Query {
         return likeText;
     }
 
-    public void setLikeText(String likeText) {
-        setLikeText(new String[]{likeText});
-    }
-
     public void setLikeText(String... likeText) {
         this.likeText = likeText;
     }
@@ -231,7 +232,7 @@ public class MoreLikeThisQuery extends Query {
         return likeFields;
     }
 
-    public void setLikeText(Fields... likeFields) {
+    public void setLikeFields(Fields... likeFields) {
         this.likeFields = likeFields;
     }
 
@@ -239,7 +240,7 @@ public class MoreLikeThisQuery extends Query {
         setLikeText(likeText.toArray(Strings.EMPTY_ARRAY));
     }
 
-    public void setUnlikeText(Fields... unlikeFields) {
+    public void setUnlikeFields(Fields... unlikeFields) {
         this.unlikeFields = unlikeFields;
     }
 

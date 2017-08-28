@@ -18,10 +18,20 @@
  */
 
 package org.elasticsearch.common.collect;
+
 import org.apache.lucene.util.mutable.MutableValueInt;
 
 import java.lang.reflect.Array;
-import java.util.*;
+import java.util.AbstractMap;
+import java.util.AbstractSet;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -65,7 +75,7 @@ public final class CopyOnWriteHashMap<K, V> extends AbstractMap<K, V> {
     /**
      * Abstraction of a node, implemented by both inner and leaf nodes.
      */
-    private static abstract class Node<K, V> {
+    private abstract static class Node<K, V> {
 
         /**
          * Recursively get the key with the given hash.
@@ -423,7 +433,7 @@ public final class CopyOnWriteHashMap<K, V> extends AbstractMap<K, V> {
         private final Deque<Map.Entry<K, V>> entries;
         private final Deque<Node<K, V>> nodes;
 
-        public EntryIterator(Node<K, V> node) {
+        EntryIterator(Node<K, V> node) {
             entries = new ArrayDeque<>();
             nodes = new ArrayDeque<>();
             node.visit(entries, nodes);

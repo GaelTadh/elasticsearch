@@ -20,12 +20,11 @@
 package org.elasticsearch.common.lucene.search.function;
 
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Scorer;
 import org.elasticsearch.script.ExplainableSearchScript;
-import org.elasticsearch.script.LeafSearchScript;
 import org.elasticsearch.script.Script;
-import org.elasticsearch.script.ScriptException;
 import org.elasticsearch.script.SearchScript;
 
 import java.io.IOException;
@@ -37,7 +36,7 @@ public class ScriptScoreFunction extends ScoreFunction {
         protected int docid;
         protected float score;
 
-        public CannedScorer() {
+        CannedScorer() {
             super(null);
         }
 
@@ -57,27 +56,17 @@ public class ScriptScoreFunction extends ScoreFunction {
         }
 
         @Override
-        public int nextDoc() throws IOException {
+        public DocIdSetIterator iterator() {
             throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public int advance(int target) throws IOException {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public long cost() {
-            return 1;
         }
     }
 
     private final Script sScript;
 
-    private final SearchScript script;
+    private final SearchScript.LeafFactory script;
 
 
-    public ScriptScoreFunction(Script sScript, SearchScript script) {
+    public ScriptScoreFunction(Script sScript, SearchScript.LeafFactory script) {
         super(CombineFunction.REPLACE);
         this.sScript = sScript;
         this.script = script;
@@ -85,19 +74,16 @@ public class ScriptScoreFunction extends ScoreFunction {
 
     @Override
     public LeafScoreFunction getLeafScoreFunction(LeafReaderContext ctx) throws IOException {
-        final LeafSearchScript leafScript = script.getLeafSearchScript(ctx);
+        final SearchScript leafScript = script.newInstance(ctx);
         final CannedScorer scorer = new CannedScorer();
         leafScript.setScorer(scorer);
         return new LeafScoreFunction() {
             @Override
-            public double score(int docId, float subQueryScore) {
+            public double score(int docId, float subQueryScore) throws IOException {
                 leafScript.setDocument(docId);
                 scorer.docid = docId;
                 scorer.score = subQueryScore;
                 double result = leafScript.runAsDouble();
-                if (Double.isNaN(result)) {
-                    throw new ScriptException("script_score returned NaN");
-                }
                 return result;
             }
 
@@ -119,7 +105,7 @@ public class ScriptScoreFunction extends ScoreFunction {
                             subQueryScore.getValue(), "_score: ",
                             subQueryScore);
                     return Explanation.match(
-                            CombineFunction.toFloat(score), explanation,
+                            (float) score, explanation,
                             scoreExp);
                 }
                 return exp;
@@ -129,7 +115,7 @@ public class ScriptScoreFunction extends ScoreFunction {
 
     @Override
     public boolean needsScores() {
-        return script.needsScores();
+        return script.needs_score();
     }
 
     @Override
@@ -141,5 +127,10 @@ public class ScriptScoreFunction extends ScoreFunction {
     protected boolean doEquals(ScoreFunction other) {
         ScriptScoreFunction scriptScoreFunction = (ScriptScoreFunction) other;
         return Objects.equals(this.sScript, scriptScoreFunction.sScript);
+    }
+
+    @Override
+    protected int doHashCode() {
+        return Objects.hash(sScript);
     }
 }

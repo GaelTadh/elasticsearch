@@ -25,25 +25,15 @@ import org.elasticsearch.action.IndicesRequest;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.unit.TimeValue;
 
 import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 
-/**
- *
- */
-public class BroadcastRequest<T extends BroadcastRequest> extends ActionRequest<T> implements IndicesRequest.Replaceable {
+public class BroadcastRequest<Request extends BroadcastRequest<Request>> extends ActionRequest implements IndicesRequest.Replaceable {
 
     protected String[] indices;
     private IndicesOptions indicesOptions = IndicesOptions.strictExpandOpenAndForbidClosed();
 
     public BroadcastRequest() {
-
-    }
-
-    protected BroadcastRequest(ActionRequest originalRequest) {
-        super(originalRequest);
     }
 
     protected BroadcastRequest(String[] indices) {
@@ -57,9 +47,9 @@ public class BroadcastRequest<T extends BroadcastRequest> extends ActionRequest<
 
     @SuppressWarnings("unchecked")
     @Override
-    public final T indices(String... indices) {
+    public final Request indices(String... indices) {
         this.indices = indices;
-        return (T) this;
+        return (Request) this;
     }
 
     @Override
@@ -73,9 +63,9 @@ public class BroadcastRequest<T extends BroadcastRequest> extends ActionRequest<
     }
 
     @SuppressWarnings("unchecked")
-    public final T indicesOptions(IndicesOptions indicesOptions) {
+    public final Request indicesOptions(IndicesOptions indicesOptions) {
         this.indicesOptions = indicesOptions;
-        return (T) this;
+        return (Request) this;
     }
 
     @Override

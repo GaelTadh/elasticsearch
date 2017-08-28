@@ -19,17 +19,14 @@
 package org.elasticsearch.index.fieldvisitor;
 
 import org.apache.lucene.index.FieldInfo;
-import org.elasticsearch.index.mapper.FieldMapper;
-import org.elasticsearch.index.mapper.MappedFieldType;
-import org.elasticsearch.index.mapper.internal.IdFieldMapper;
-import org.elasticsearch.index.mapper.internal.TypeFieldMapper;
-import org.elasticsearch.index.mapper.internal.UidFieldMapper;
+import org.elasticsearch.index.mapper.IdFieldMapper;
+import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.index.mapper.TypeFieldMapper;
+import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.index.mapper.UidFieldMapper;
 
 import java.io.IOException;
-import java.util.List;
 
-/**
- */
 public class SingleFieldsVisitor extends FieldsVisitor {
 
     private String field;
@@ -57,25 +54,17 @@ public class SingleFieldsVisitor extends FieldsVisitor {
         super.reset();
     }
 
-    public void postProcess(MappedFieldType fieldType) {
-        if (uid != null) {
-            // TODO: this switch seems very wrong...either each case should be breaking, or this should not be a switch
-            switch (field) {
-                case UidFieldMapper.NAME: addValue(field, uid.toString());
-                case IdFieldMapper.NAME: addValue(field, uid.id());
-                case TypeFieldMapper.NAME: addValue(field, uid.type());
-            }
+    @Override
+    public void postProcess(MapperService mapperService) {
+        super.postProcess(mapperService);
+        if (id != null) {
+            addValue(IdFieldMapper.NAME, id);
         }
-
-        if (fieldsValues == null) {
-            return;
+        if (type != null) {
+            addValue(TypeFieldMapper.NAME, type);
         }
-        List<Object> fieldValues = fieldsValues.get(fieldType.names().indexName());
-        if (fieldValues == null) {
-            return;
-        }
-        for (int i = 0; i < fieldValues.size(); i++) {
-            fieldValues.set(i, fieldType.valueForSearch(fieldValues.get(i)));
+        if (type != null && id != null) {
+            addValue(UidFieldMapper.NAME, Uid.createUid(type, id));
         }
     }
 }

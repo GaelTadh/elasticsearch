@@ -16,7 +16,11 @@
 
 package org.elasticsearch.common.inject;
 
-import org.elasticsearch.common.inject.internal.*;
+import org.elasticsearch.common.inject.internal.Errors;
+import org.elasticsearch.common.inject.internal.ErrorsException;
+import org.elasticsearch.common.inject.internal.InternalContext;
+import org.elasticsearch.common.inject.internal.InternalFactory;
+import org.elasticsearch.common.inject.internal.SourceProvider;
 import org.elasticsearch.common.inject.spi.Dependency;
 
 import java.util.Objects;
@@ -29,11 +33,11 @@ class InternalFactoryToProviderAdapter<T> implements InternalFactory<T> {
     private final Initializable<Provider<? extends T>> initializable;
     private final Object source;
 
-    public InternalFactoryToProviderAdapter(Initializable<Provider<? extends T>> initializable) {
+    InternalFactoryToProviderAdapter(Initializable<Provider<? extends T>> initializable) {
         this(initializable, SourceProvider.UNKNOWN_SOURCE);
     }
 
-    public InternalFactoryToProviderAdapter(
+    InternalFactoryToProviderAdapter(
             Initializable<Provider<? extends T>> initializable, Object source) {
         this.initializable = Objects.requireNonNull(initializable, "provider");
         this.source = Objects.requireNonNull(source, "source");

@@ -18,7 +18,10 @@
  */
 package org.elasticsearch.common.lucene.index;
 
-import org.apache.lucene.index.*;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FilterDirectoryReader;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReader;
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.index.shard.ShardId;
 
@@ -47,6 +50,12 @@ public final class ElasticsearchDirectoryReader extends FilterDirectoryReader {
     }
 
     @Override
+    public CacheHelper getReaderCacheHelper() {
+        // safe to delegate since this reader does not alter the index
+        return in.getReaderCacheHelper();
+    }
+
+    @Override
     protected DirectoryReader doWrapDirectoryReader(DirectoryReader in) throws IOException {
         return new ElasticsearchDirectoryReader(in, wrapper, shardId);
     }
@@ -63,7 +72,7 @@ public final class ElasticsearchDirectoryReader extends FilterDirectoryReader {
         return new ElasticsearchDirectoryReader(reader, new SubReaderWrapper(shardId), shardId);
     }
 
-    private final static class SubReaderWrapper extends FilterDirectoryReader.SubReaderWrapper {
+    private static final class SubReaderWrapper extends FilterDirectoryReader.SubReaderWrapper {
         private final ShardId shardId;
         SubReaderWrapper(ShardId shardId) {
             this.shardId = shardId;
@@ -81,14 +90,17 @@ public final class ElasticsearchDirectoryReader extends FilterDirectoryReader {
      * @throws IllegalArgumentException if the reader doesn't contain an {@link ElasticsearchDirectoryReader} in it's hierarchy
      */
     @SuppressForbidden(reason = "This is the only sane way to add a ReaderClosedListener")
-    public static void addReaderCloseListener(DirectoryReader reader, IndexReader.ReaderClosedListener listener) {
+    public static void addReaderCloseListener(DirectoryReader reader, IndexReader.ClosedListener listener) {
         ElasticsearchDirectoryReader elasticsearchDirectoryReader = getElasticsearchDirectoryReader(reader);
-        if (elasticsearchDirectoryReader != null) {
-            assert reader.getCoreCacheKey() == elasticsearchDirectoryReader.getCoreCacheKey();
-            elasticsearchDirectoryReader.addReaderClosedListener(listener);
-            return;
+        if (elasticsearchDirectoryReader == null) {
+            throw new IllegalArgumentException("Can't install close listener reader is not an ElasticsearchDirectoryReader/ElasticsearchLeafReader");
         }
-        throw new IllegalArgumentException("Can't install close listener reader is not an ElasticsearchDirectoryReader/ElasticsearchLeafReader");
+        IndexReader.CacheHelper cacheHelper = elasticsearchDirectoryReader.getReaderCacheHelper();
+        if (cacheHelper == null) {
+            throw new IllegalArgumentException("Reader " + elasticsearchDirectoryReader + " does not support caching");
+        }
+        assert cacheHelper.getKey() == reader.getReaderCacheHelper().getKey();
+        cacheHelper.addClosedListener(listener);
     }
 
     /**

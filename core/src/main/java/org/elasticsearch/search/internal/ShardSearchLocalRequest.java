@@ -19,23 +19,26 @@
 
 package org.elasticsearch.search.internal;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchType;
-import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.common.ContextAndHeaderHolder;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryRewriteContext;
+import org.elasticsearch.index.query.QueryShardContext;
+import org.elasticsearch.index.query.Rewriteable;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.script.Template;
 import org.elasticsearch.search.Scroll;
+import org.elasticsearch.search.SearchService;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 
 import java.io.IOException;
-
-import static org.elasticsearch.search.Scroll.readScroll;
+import java.util.Optional;
 
 /**
  * Shard level search request that gets created and consumed on the local node.
@@ -57,62 +60,57 @@ import static org.elasticsearch.search.Scroll.readScroll;
  * </pre>
  */
 
-public class ShardSearchLocalRequest extends ContextAndHeaderHolder implements ShardSearchRequest {
+public class ShardSearchLocalRequest implements ShardSearchRequest {
 
-    private String index;
-    private int shardId;
+    private String clusterAlias;
+    private ShardId shardId;
     private int numberOfShards;
     private SearchType searchType;
     private Scroll scroll;
     private String[] types = Strings.EMPTY_ARRAY;
-    private String[] filteringAliases;
+    private AliasFilter aliasFilter;
+    private float indexBoost;
     private SearchSourceBuilder source;
-    private Template template;
     private Boolean requestCache;
     private long nowInMillis;
+
+    private boolean profile;
 
     ShardSearchLocalRequest() {
     }
 
-    ShardSearchLocalRequest(SearchRequest searchRequest, ShardRouting shardRouting, int numberOfShards,
-                            String[] filteringAliases, long nowInMillis) {
-        this(shardRouting.shardId(), numberOfShards, searchRequest.searchType(),
-                searchRequest.source(), searchRequest.types(), searchRequest.requestCache());
-        this.template = searchRequest.template();
+    ShardSearchLocalRequest(SearchRequest searchRequest, ShardId shardId, int numberOfShards,
+                            AliasFilter aliasFilter, float indexBoost, long nowInMillis, String clusterAlias) {
+        this(shardId, numberOfShards, searchRequest.searchType(),
+                searchRequest.source(), searchRequest.types(), searchRequest.requestCache(), aliasFilter, indexBoost);
         this.scroll = searchRequest.scroll();
-        this.filteringAliases = filteringAliases;
         this.nowInMillis = nowInMillis;
-        copyContextAndHeadersFrom(searchRequest);
+        this.clusterAlias = clusterAlias;
     }
 
-    public ShardSearchLocalRequest(String[] types, long nowInMillis) {
+    public ShardSearchLocalRequest(ShardId shardId, String[] types, long nowInMillis, AliasFilter aliasFilter) {
         this.types = types;
         this.nowInMillis = nowInMillis;
-    }
-
-    public ShardSearchLocalRequest(String[] types, long nowInMillis, String[] filteringAliases) {
-        this(types, nowInMillis);
-        this.filteringAliases = filteringAliases;
+        this.aliasFilter = aliasFilter;
+        this.shardId = shardId;
+        indexBoost = 1.0f;
     }
 
     public ShardSearchLocalRequest(ShardId shardId, int numberOfShards, SearchType searchType, SearchSourceBuilder source, String[] types,
-            Boolean requestCache) {
-        this.index = shardId.getIndex();
-        this.shardId = shardId.id();
+            Boolean requestCache, AliasFilter aliasFilter, float indexBoost) {
+        this.shardId = shardId;
         this.numberOfShards = numberOfShards;
         this.searchType = searchType;
         this.source = source;
         this.types = types;
         this.requestCache = requestCache;
+        this.aliasFilter = aliasFilter;
+        this.indexBoost = indexBoost;
     }
 
-    @Override
-    public String index() {
-        return index;
-    }
 
     @Override
-    public int shardId() {
+    public ShardId shardId() {
         return shardId;
     }
 
@@ -124,6 +122,16 @@ public class ShardSearchLocalRequest extends ContextAndHeaderHolder implements S
     @Override
     public SearchSourceBuilder source() {
         return source;
+    }
+
+    @Override
+    public AliasFilter getAliasFilter() {
+        return aliasFilter;
+    }
+
+    @Override
+    public void setAliasFilter(AliasFilter aliasFilter) {
+        this.aliasFilter = aliasFilter;
     }
 
     @Override
@@ -142,17 +150,13 @@ public class ShardSearchLocalRequest extends ContextAndHeaderHolder implements S
     }
 
     @Override
-    public String[] filteringAliases() {
-        return filteringAliases;
+    public float indexBoost() {
+        return indexBoost;
     }
 
     @Override
     public long nowInMillis() {
         return nowInMillis;
-    }
-    @Override
-    public Template template() {
-        return template;
     }
 
     @Override
@@ -165,53 +169,69 @@ public class ShardSearchLocalRequest extends ContextAndHeaderHolder implements S
         return scroll;
     }
 
-    @SuppressWarnings("unchecked")
+    @Override
+    public void setProfile(boolean profile) {
+        this.profile = profile;
+    }
+
+    @Override
+    public boolean isProfile() {
+        return profile;
+    }
+
+    void setSearchType(SearchType type) {
+        this.searchType = type;
+    }
+
     protected void innerReadFrom(StreamInput in) throws IOException {
-        index = in.readString();
-        shardId = in.readVInt();
+        shardId = ShardId.readShardId(in);
         searchType = SearchType.fromId(in.readByte());
         numberOfShards = in.readVInt();
-        if (in.readBoolean()) {
-            scroll = readScroll(in);
-        }
-        if (in.readBoolean()) {
-            source = SearchSourceBuilder.readSearchSourceFrom(in);
-        }
+        scroll = in.readOptionalWriteable(Scroll::new);
+        source = in.readOptionalWriteable(SearchSourceBuilder::new);
         types = in.readStringArray();
-        filteringAliases = in.readStringArray();
+        aliasFilter = new AliasFilter(in);
+        if (in.getVersion().onOrAfter(Version.V_5_2_0)) {
+            indexBoost = in.readFloat();
+        } else {
+            // Nodes < 5.2.0 doesn't send index boost. Read it from source.
+            if (source != null) {
+                Optional<SearchSourceBuilder.IndexBoost> boost = source.indexBoosts()
+                    .stream()
+                    .filter(ib -> ib.getIndex().equals(shardId.getIndexName()))
+                    .findFirst();
+                indexBoost = boost.isPresent() ? boost.get().getBoost() : 1.0f;
+            } else {
+                indexBoost = 1.0f;
+            }
+        }
         nowInMillis = in.readVLong();
-        template = in.readOptionalStreamable(Template::new);
         requestCache = in.readOptionalBoolean();
+        if (in.getVersion().onOrAfter(Version.V_5_6_0)) {
+            clusterAlias = in.readOptionalString();
+        }
     }
 
     protected void innerWriteTo(StreamOutput out, boolean asKey) throws IOException {
-        out.writeString(index);
-        out.writeVInt(shardId);
+        shardId.writeTo(out);
         out.writeByte(searchType.id());
         if (!asKey) {
             out.writeVInt(numberOfShards);
         }
-        if (scroll == null) {
-            out.writeBoolean(false);
-        } else {
-            out.writeBoolean(true);
-            scroll.writeTo(out);
-        }
-        if (source == null) {
-            out.writeBoolean(false);
-        } else {
-            out.writeBoolean(true);
-            source.writeTo(out);
-
-        }
+        out.writeOptionalWriteable(scroll);
+        out.writeOptionalWriteable(source);
         out.writeStringArray(types);
-        out.writeStringArrayNullable(filteringAliases);
+        aliasFilter.writeTo(out);
+        if (out.getVersion().onOrAfter(Version.V_5_2_0)) {
+            out.writeFloat(indexBoost);
+        }
         if (!asKey) {
             out.writeVLong(nowInMillis);
         }
-
-        out.writeOptionalStreamable(template);
         out.writeOptionalBoolean(requestCache);
+        if (out.getVersion().onOrAfter(Version.V_5_6_0)) {
+            out.writeOptionalString(clusterAlias);
+        }
     }
 
     @Override
@@ -220,6 +240,39 @@ public class ShardSearchLocalRequest extends ContextAndHeaderHolder implements S
         this.innerWriteTo(out, true);
         // copy it over, most requests are small, we might as well copy to make sure we are not sliced...
         // we could potentially keep it without copying, but then pay the price of extra unused bytes up to a page
-        return out.bytes().copyBytesArray();
+        return new BytesArray(out.bytes().toBytesRef(), true);// do a deep copy
     }
+
+    @Override
+    public String getClusterAlias() {
+        return clusterAlias;
+    }
+
+    @Override
+    public Rewriteable<Rewriteable> getRewriteable() {
+        return new RequestRewritable(this);
+    }
+
+    static class RequestRewritable implements Rewriteable<Rewriteable> {
+
+        final ShardSearchRequest request;
+
+        RequestRewritable(ShardSearchRequest request) {
+            this.request = request;
+        }
+
+        @Override
+        public Rewriteable rewrite(QueryRewriteContext ctx) throws IOException {
+            SearchSourceBuilder newSource = request.source() == null ? null : Rewriteable.rewrite(request.source(), ctx);
+            AliasFilter newAliasFilter = Rewriteable.rewrite(request.getAliasFilter(), ctx);
+            if (newSource == request.source() && newAliasFilter == request.getAliasFilter()) {
+                return this;
+            } else {
+                request.source(newSource);
+                request.setAliasFilter(newAliasFilter);
+                return new RequestRewritable(request);
+            }
+        }
+    }
+
 }

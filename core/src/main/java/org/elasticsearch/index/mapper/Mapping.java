@@ -21,15 +21,15 @@ package org.elasticsearch.index.mapper;
 
 import org.elasticsearch.Version;
 import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.index.mapper.object.RootObjectMapper;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static java.util.Collections.emptyMap;
@@ -39,27 +39,22 @@ import static java.util.Collections.unmodifiableMap;
  * Wrapper around everything that defines a mapping, without references to
  * utility classes like MapperService, ...
  */
-public final class Mapping implements ToXContent {
-
-    public static final List<String> LEGACY_INCLUDE_IN_OBJECT = Arrays.asList("_all", "_id", "_parent", "_routing", "_timestamp", "_ttl");
+public final class Mapping implements ToXContentFragment {
 
     final Version indexCreated;
     final RootObjectMapper root;
     final MetadataFieldMapper[] metadataMappers;
     final Map<Class<? extends MetadataFieldMapper>, MetadataFieldMapper> metadataMappersMap;
-    volatile Map<String, Object> meta;
+    final Map<String, Object> meta;
 
     public Mapping(Version indexCreated, RootObjectMapper rootObjectMapper, MetadataFieldMapper[] metadataMappers, Map<String, Object> meta) {
         this.indexCreated = indexCreated;
-        this.root = rootObjectMapper;
         this.metadataMappers = metadataMappers;
         Map<Class<? extends MetadataFieldMapper>, MetadataFieldMapper> metadataMappersMap = new HashMap<>();
         for (MetadataFieldMapper metadataMapper : metadataMappers) {
-            if (indexCreated.before(Version.V_2_0_0_beta1) && LEGACY_INCLUDE_IN_OBJECT.contains(metadataMapper.name())) {
-                root.putMapper(metadataMapper);
-            }
             metadataMappersMap.put(metadataMapper.getClass(), metadataMapper);
         }
+        this.root = rootObjectMapper;
         // keep root mappers sorted for consistent serialization
         Arrays.sort(metadataMappers, new Comparator<Mapper>() {
             @Override
@@ -89,22 +84,43 @@ public final class Mapping implements ToXContent {
         return (T) metadataMappersMap.get(clazz);
     }
 
-    /** @see DocumentMapper#merge(Mapping, boolean, boolean) */
-    public void merge(Mapping mergeWith, MergeResult mergeResult) {
-        assert metadataMappers.length == mergeWith.metadataMappers.length;
+    /** @see DocumentMapper#merge(Mapping, boolean) */
+    public Mapping merge(Mapping mergeWith, boolean updateAllTypes) {
+        RootObjectMapper mergedRoot = root.merge(mergeWith.root, updateAllTypes);
+        Map<Class<? extends MetadataFieldMapper>, MetadataFieldMapper> mergedMetaDataMappers = new HashMap<>(metadataMappersMap);
+        for (MetadataFieldMapper metaMergeWith : mergeWith.metadataMappers) {
+            MetadataFieldMapper mergeInto = mergedMetaDataMappers.get(metaMergeWith.getClass());
+            MetadataFieldMapper merged;
+            if (mergeInto == null) {
+                merged = metaMergeWith;
+            } else {
+                merged = mergeInto.merge(metaMergeWith, updateAllTypes);
+            }
+            mergedMetaDataMappers.put(merged.getClass(), merged);
+        }
+        return new Mapping(indexCreated, mergedRoot, mergedMetaDataMappers.values().toArray(new MetadataFieldMapper[0]), mergeWith.meta);
+    }
 
-        root.merge(mergeWith.root, mergeResult);
-        for (MetadataFieldMapper metadataMapper : metadataMappers) {
-            MetadataFieldMapper mergeWithMetadataMapper = mergeWith.metadataMapper(metadataMapper.getClass());
-            if (mergeWithMetadataMapper != null) {
-                metadataMapper.merge(mergeWithMetadataMapper, mergeResult);
+    /**
+     * Recursively update sub field types.
+     */
+    public Mapping updateFieldType(Map<String, MappedFieldType> fullNameToFieldType) {
+        MetadataFieldMapper[] updatedMeta = null;
+        for (int i = 0; i < metadataMappers.length; ++i) {
+            MetadataFieldMapper currentFieldMapper = metadataMappers[i];
+            MetadataFieldMapper updatedFieldMapper = (MetadataFieldMapper) currentFieldMapper.updateFieldType(fullNameToFieldType);
+            if (updatedFieldMapper != currentFieldMapper) {
+                if (updatedMeta == null) {
+                    updatedMeta = Arrays.copyOf(metadataMappers, metadataMappers.length);
+                }
+                updatedMeta[i] = updatedFieldMapper;
             }
         }
-
-        if (mergeResult.simulate() == false) {
-            // let the merge with attributes to override the attributes
-            meta = mergeWith.meta;
+        RootObjectMapper updatedRoot = root.updateFieldType(fullNameToFieldType);
+        if (updatedMeta == null && updatedRoot == root) {
+            return this;
         }
+        return new Mapping(indexCreated, updatedRoot, updatedMeta == null ? metadataMappers : updatedMeta, meta);
     }
 
     @Override
@@ -131,7 +147,7 @@ public final class Mapping implements ToXContent {
             toXContent(builder, new ToXContent.MapParams(emptyMap()));
             return builder.endObject().string();
         } catch (IOException bogus) {
-            throw new AssertionError(bogus);
+            throw new UncheckedIOException(bogus);
         }
     }
 }

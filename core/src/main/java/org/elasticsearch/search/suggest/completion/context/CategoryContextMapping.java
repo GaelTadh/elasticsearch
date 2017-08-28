@@ -19,17 +19,30 @@
 
 package org.elasticsearch.search.suggest.completion.context;
 
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.SortedSetDocValuesField;
+import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.search.SortedSetSortField;
 import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.Version;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.XContentParser.Token;
+import org.elasticsearch.index.mapper.KeywordFieldMapper;
 import org.elasticsearch.index.mapper.ParseContext;
 import org.elasticsearch.index.mapper.ParseContext.Document;
+import org.elasticsearch.index.mapper.StringFieldType;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * A {@link ContextMapping} that uses a simple string as a criteria
@@ -38,7 +51,7 @@ import java.util.*;
  * {@link CategoryQueryContext} defines options for constructing
  * a unit of query context for this context type
  */
-public class CategoryContextMapping extends ContextMapping {
+public class CategoryContextMapping extends ContextMapping<CategoryQueryContext> {
 
     private static final String FIELD_FIELDNAME = "path";
 
@@ -99,21 +112,24 @@ public class CategoryContextMapping extends ContextMapping {
      *  </ul>
      */
     @Override
-    public Set<CharSequence> parseContext(ParseContext parseContext, XContentParser parser) throws IOException, ElasticsearchParseException {
+    public Set<CharSequence> parseContext(ParseContext parseContext, XContentParser parser)
+            throws IOException, ElasticsearchParseException {
         final Set<CharSequence> contexts = new HashSet<>();
         Token token = parser.currentToken();
-        if (token == Token.VALUE_STRING) {
+        if (token == Token.VALUE_STRING || token == Token.VALUE_NUMBER || token == Token.VALUE_BOOLEAN) {
             contexts.add(parser.text());
         } else if (token == Token.START_ARRAY) {
             while ((token = parser.nextToken()) != Token.END_ARRAY) {
-                if (token == Token.VALUE_STRING) {
+                if (token == Token.VALUE_STRING || token == Token.VALUE_NUMBER || token == Token.VALUE_BOOLEAN) {
                     contexts.add(parser.text());
                 } else {
-                    throw new ElasticsearchParseException("context array must have string values");
+                    throw new ElasticsearchParseException(
+                            "context array must have string, number or boolean values, but was [" + token + "]");
                 }
             }
         } else {
-            throw new ElasticsearchParseException("contexts must be a string or a list of strings");
+            throw new ElasticsearchParseException(
+                    "contexts must be a string, number or boolean or a list of string, number or boolean, but was [" + token + "]");
         }
         return contexts;
     }
@@ -125,10 +141,25 @@ public class CategoryContextMapping extends ContextMapping {
             IndexableField[] fields = document.getFields(fieldName);
             values = new HashSet<>(fields.length);
             for (IndexableField field : fields) {
-                values.add(field.stringValue());
+                if (field instanceof SortedDocValuesField ||
+                        field instanceof SortedSetDocValuesField ||
+                        field instanceof StoredField) {
+                    // Ignore doc values and stored fields
+                } else if (field.fieldType() instanceof KeywordFieldMapper.KeywordFieldType) {
+                    values.add(field.binaryValue().utf8ToString());
+                } else if (field.fieldType() instanceof StringFieldType) {
+                    values.add(field.stringValue());
+                } else {
+                    throw new IllegalArgumentException("Failed to parse context field [" + fieldName + "], only keyword and text fields are accepted");
+                }
             }
         }
-        return (values == null) ? Collections.<CharSequence>emptySet() : values;
+        return (values == null) ? Collections.emptySet() : values;
+    }
+
+    @Override
+    protected CategoryQueryContext fromXContent(XContentParser parser) throws IOException {
+        return CategoryQueryContext.fromXContent(parser);
     }
 
     /**
@@ -148,19 +179,13 @@ public class CategoryContextMapping extends ContextMapping {
      *  </ul>
      */
     @Override
-    public List<QueryContext> parseQueryContext(XContentParser parser) throws IOException, ElasticsearchParseException {
-        List<QueryContext> queryContexts = new ArrayList<>();
-        Token token = parser.nextToken();
-        if (token == Token.START_OBJECT || token == Token.VALUE_STRING) {
-            CategoryQueryContext parse = CategoryQueryContext.parse(parser);
-            queryContexts.add(new QueryContext(parse.getCategory().toString(), parse.getBoost(), parse.isPrefix()));
-        } else if (token == Token.START_ARRAY) {
-            while (parser.nextToken() != Token.END_ARRAY) {
-                CategoryQueryContext parse = CategoryQueryContext.parse(parser);
-                queryContexts.add(new QueryContext(parse.getCategory().toString(), parse.getBoost(), parse.isPrefix()));
-            }
-        }
-        return queryContexts;
+    public List<InternalQueryContext> toInternalQueryContexts(List<CategoryQueryContext> queryContexts) {
+        List<InternalQueryContext> internalInternalQueryContexts = new ArrayList<>(queryContexts.size());
+        internalInternalQueryContexts.addAll(
+            queryContexts.stream()
+                .map(queryContext -> new InternalQueryContext(queryContext.getCategory(), queryContext.getBoost(), queryContext.isPrefix()))
+                .collect(Collectors.toList()));
+        return internalInternalQueryContexts;
     }
 
     @Override

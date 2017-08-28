@@ -19,49 +19,18 @@
 
 package org.elasticsearch.script.expression;
 
-import org.apache.lucene.expressions.js.JavascriptCompiler;
-import org.elasticsearch.SpecialPermission;
+import java.util.Collection;
+
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.plugins.Plugin;
-import org.elasticsearch.script.ScriptModule;
+import org.elasticsearch.plugins.ScriptPlugin;
+import org.elasticsearch.script.ScriptContext;
+import org.elasticsearch.script.ScriptEngine;
 
-import java.security.AccessController;
-import java.security.PrivilegedAction;
-import java.text.ParseException;
-
-public class ExpressionPlugin extends Plugin {
-    
-    // lucene expressions has crazy checks in its clinit for the functions map
-    // it violates rules of classloaders to detect accessibility
-    // TODO: clean that up
-    static {
-        SecurityManager sm = System.getSecurityManager();
-        if (sm != null) {
-            sm.checkPermission(new SpecialPermission());
-        }
-        AccessController.doPrivileged(new PrivilegedAction<Void>() {
-            @Override
-            public Void run() {
-                try {
-                    JavascriptCompiler.compile("0");
-                } catch (ParseException e) {
-                    throw new RuntimeException(e);
-                }
-                return null;
-            }
-        });
-    }
+public class ExpressionPlugin extends Plugin implements ScriptPlugin {
 
     @Override
-    public String name() {
-        return "lang-expression";
-    }
-
-    @Override
-    public String description() {
-        return "Lucene expressions integration for Elasticsearch";
-    }
-
-    public void onModule(ScriptModule module) {
-        module.addScriptEngine(ExpressionScriptEngineService.class);
+    public ScriptEngine getScriptEngine(Settings settings, Collection<ScriptContext<?>> contexts) {
+        return new ExpressionScriptEngine(settings);
     }
 }

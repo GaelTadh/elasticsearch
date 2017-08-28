@@ -1,20 +1,24 @@
 package org.elasticsearch.gradle.test
 
 import org.gradle.api.DefaultTask
-import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.internal.tasks.options.Option
 import org.gradle.util.ConfigureUtil
 
 public class RunTask extends DefaultTask {
 
-    ClusterConfiguration clusterConfig = new ClusterConfiguration(baseHttpPort: 9200, baseTransportPort: 9300, daemonize: false)
+    ClusterConfiguration clusterConfig
 
     public RunTask() {
         description = "Runs elasticsearch with '${project.path}'"
         group = 'Verification'
+        clusterConfig = new ClusterConfiguration(project)
+        clusterConfig.httpPort = 9200
+        clusterConfig.transportPort = 9300
+        clusterConfig.daemonize = false
+        clusterConfig.distribution = 'zip'
         project.afterEvaluate {
-            ClusterFormationTasks.setup(project, this, clusterConfig)
+            ClusterFormationTasks.setup(project, name, this, clusterConfig)
         }
     }
 
