@@ -27,7 +27,7 @@ import org.elasticsearch.painless.Definition.Field;
 import org.elasticsearch.painless.Definition.Method;
 import org.elasticsearch.painless.Definition.Struct;
 import org.elasticsearch.painless.Definition.Type;
-import org.elasticsearch.painless.api.Augmentation;
+import org.elasticsearch.painless.spi.Whitelist;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -67,7 +67,8 @@ public class PainlessDocGenerator {
                 Files.newOutputStream(indexPath, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
                 false, StandardCharsets.UTF_8.name())) {
             emitGeneratedWarning(indexStream);
-            List<Type> types = Definition.allSimpleTypes().stream().sorted(comparing(t -> t.name)).collect(toList());
+            List<Type> types = new Definition(Whitelist.BASE_WHITELISTS).
+                    allSimpleTypes().stream().sorted(comparing(t -> t.name)).collect(toList());
             for (Type type : types) {
                 if (type.clazz.isPrimitive()) {
                     // Primitives don't have methods to reference
